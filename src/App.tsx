@@ -9,7 +9,7 @@ import { COLORS, Ladder } from "./Ladder";
 import { Ghost } from "./Pixel";
 import { music, type Level } from "./audio";
 import {
-  DEFAULT_PARAMS, addBots, botGap, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
+  DEFAULT_PARAMS, TABLE_RENT_SOL, addBots, botCostSol, botGap, friendlyError, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
   type GameParams,
 } from "./actions";
 import { burnerWallet, hasPhantom, hasSession, loadBots, phantomWallet, recentGames, sessionFor, type AppWallet } from "./wallet";
@@ -101,9 +101,9 @@ export default function App() {
         </div>
       </header>
       {gameMatch ? (
-        <GameView key={gameMatch[1]} address={new PublicKey(gameMatch[1])} wallet={wallet} say={say} />
+        <GameView key={gameMatch[1]} address={new PublicKey(gameMatch[1])} wallet={wallet} balance={balance} say={say} />
       ) : (
-        <Home wallet={wallet} say={say} />
+        <Home wallet={wallet} balance={balance} airdrop={airdrop} say={say} />
       )}
       {toast && <div className="toast">{toast}</div>}
       <footer>
@@ -114,19 +114,22 @@ export default function App() {
   );
 }
 
-function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) {
+function Home({ wallet, balance, airdrop, say }: { wallet: AppWallet; balance: number | null; airdrop: () => void; say: (m: string) => void }) {
   const [p, setP] = useState<GameParams>(DEFAULT_PARAMS);
   const [busy, setBusy] = useState(false);
   const recent = recentGames();
   useEffect(() => music.setLevel(1), []); // the site plays danger level 1 (this also ends the end song)
   const deposit = p.stake + p.rungPrice * p.rungBudget + 0.002;
+  const need = TABLE_RENT_SOL + deposit + 0.001;
+  const have = balance === null ? null : balance / 1e9;
+  const lacking = have !== null && have < need;
   const create = async () => {
     setBusy(true);
     try {
       const g = await createGame(wallet, { ...p, duration: clampRound(p.duration) });
       location.hash = `#/g/${g.toBase58()}`;
     } catch (e) {
-      say(`Create failed: ${String(e).slice(0, 140)}`);
+      say(`Create failed: ${friendlyError(e)}`);
     } finally {
       setBusy(false);
     }
@@ -167,8 +170,27 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
         <label>Rung price (SOL)<input type="number" step="0.0001" value={p.rungPrice} onChange={(e) => setP({ ...p, rungPrice: +e.target.value })} /></label>
         <label>Rung budget<input type="number" value={p.rungBudget} onChange={(e) => setP({ ...p, rungBudget: +e.target.value })} /></label>
         <label>Round length (s)<input type="number" min={MIN_ROUND_SECS} max={MAX_ROUND_SECS} value={p.duration} onChange={(e) => setP({ ...p, duration: +e.target.value })} onBlur={() => setP({ ...p, duration: clampRound(p.duration) })} /></label>
-        <p className="muted">Each player deposits {deposit.toFixed(4)} SOL (stake + rung budget + a 0.002 session float).</p>
-        <button className="primary" disabled={busy} onClick={create}>{busy ? "Opening…" : "Open table ▶"}</button>
+        <p className="muted">
+          Each player deposits {deposit.toFixed(4)} SOL (stake + rung budget + a 0.002 session float). Opening the table adds{" "}
+          {TABLE_RENT_SOL} SOL of account rent; each bot you seat costs about {botCostSol(deposit).toFixed(3)} SOL.
+        </p>
+        {lacking && (
+          <div className="fund">
+            <b>Fund your test wallet</b>
+            <span>
+              You have {have.toFixed(3)} devnet SOL; this table needs {need.toFixed(3)} (+{(3 * botCostSol(deposit)).toFixed(3)} for 3 bots). Copy your
+              address, paste it at faucet.solana.com on Devnet, then come back.
+            </span>
+            <div className="row">
+              <button onClick={() => (navigator.clipboard.writeText(wallet.publicKey.toBase58()), say("Address copied"))}>Copy address</button>
+              <a className="as-button" href="https://faucet.solana.com" target="_blank" rel="noreferrer">Open faucet</a>
+              {wallet.kind === "burner" && <button onClick={airdrop}>Try airdrop</button>}
+            </div>
+          </div>
+        )}
+        <button className="primary" disabled={busy || lacking} onClick={create}>
+          {busy ? "Opening…" : lacking ? `Need ${need.toFixed(3)} SOL` : "Open table ▶"}
+        </button>
       </section>
       {recent.length > 0 && (
         <section className="card">
@@ -191,7 +213,7 @@ const knownNames = (): Record<string, string> => {
   }
 };
 
-function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWallet; say: (m: string) => void }) {
+function GameView({ address, wallet, balance, say }: { address: PublicKey; wallet: AppWallet; balance: number | null; say: (m: string) => void }) {
   const [game, setGame] = useState<GameState | null>(null);
   const [where, setWhere] = useState<"er" | "base" | null>(null);
   const [step, setStep] = useState<string | null>(null);
@@ -461,22 +483,28 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
 
   if (!game) return <main className="loading">Loading table {short(address)}…</main>;
 
+  const depositSol = sol(depositOf(game));
   const doJoin = async () => {
+    if (balance !== null && balance / 1e9 < depositSol + 0.001)
+      return say(`Joining needs ${(depositSol + 0.001).toFixed(3)} devnet SOL; you have ${(balance / 1e9).toFixed(3)}. Top up at faucet.solana.com.`);
     try {
       setStep("Joining…");
       await joinGame(wallet, address);
     } catch (e) {
-      say(`Join failed: ${String(e).slice(0, 140)}`);
+      say(`Join failed: ${friendlyError(e)}`);
     } finally {
       setStep(null);
     }
   };
   const doBots = async (count: number) => {
+    const cost = count * botCostSol(depositSol) + 0.001;
+    if (balance !== null && balance / 1e9 < cost)
+      return say(`Seating ${count} bot${count > 1 ? "s" : ""} needs ${cost.toFixed(3)} devnet SOL; you have ${(balance / 1e9).toFixed(3)}. Top up at faucet.solana.com.`);
     try {
       setStep(`Seating ${count} bot${count > 1 ? "s" : ""}…`);
       await addBots(wallet, game, count);
     } catch (e) {
-      say(`Bots failed: ${String(e).slice(0, 140)}`);
+      say(`Bots failed: ${friendlyError(e)}`);
     } finally {
       setStep(null);
     }
@@ -485,7 +513,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     try {
       await startRound(wallet, game, setStep);
     } catch (e) {
-      say(`Start failed: ${String(e).slice(0, 160)}`);
+      say(`Start failed: ${friendlyError(e)}`);
     } finally {
       setStep(null);
     }
@@ -581,7 +609,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
             {isHost && (
               <button className="ghost" onClick={async () => {
                 try { setStep("Refunding everyone…"); await cancelGame(wallet, game); say("Table cancelled, deposits refunded"); }
-                catch (e) { say(`Cancel failed: ${String(e).slice(0, 140)}`); } finally { setStep(null); }
+                catch (e) { say(`Cancel failed: ${friendlyError(e)}`); } finally { setStep(null); }
               }}>Cancel table (refund all)</button>
             )}
             {!isHost && me >= 0 && <p className="muted">Waiting for the host to start…</p>}

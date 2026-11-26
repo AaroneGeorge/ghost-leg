@@ -14,6 +14,20 @@ export const DEFAULT_PARAMS: GameParams = { stake: 0.02, rungPrice: 0.0005, rung
 export const depositOf = (g: Pick<GameState, "stake" | "rungPrice" | "rungBudget">) =>
   g.stake + g.rungPrice * BigInt(g.rungBudget) + SESSION_FLOAT;
 
+/** Rent for a table account (5,426 bytes) on devnet, rounded up. */
+export const TABLE_RENT_SOL = 0.0285;
+/** What one bot costs its host: deposit + its fee float (see addBots). */
+export const botCostSol = (depositSol: number) => depositSol + 0.00102;
+
+/** Solana's raw errors, in words a player can act on. */
+export function friendlyError(e: unknown): string {
+  const s = String(e);
+  // an unfunded fee payer fails simulation with no logs; a short system transfer fails with 0x1
+  if (/Logs: \[\]|prior credit|insufficient (funds|lamports)|custom program error: 0x1\b/i.test(s))
+    return "Not enough devnet SOL in your test wallet. Top it up at faucet.solana.com and try again.";
+  return s.replace(/^Error: /, "").slice(0, 160);
+}
+
 export async function createGame(wallet: AppWallet, p: GameParams): Promise<PublicKey> {
   const gameId = BigInt(Date.now());
   const game = gamePda(wallet.publicKey, gameId);
