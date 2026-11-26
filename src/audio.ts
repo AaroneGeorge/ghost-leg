@@ -32,6 +32,7 @@ class DangerMusic {
   private buffers: AudioBuffer[] | null = null; // [level1..level5, end]
   private loading = false;
   private cur: { src: AudioBufferSourceNode; gain: GainNode; startedAt: number; len: number } | null = null;
+  private latched = false; // after stop(): round music (levels 2-5) stays dead until the site music or the end song
   private ending = false; // the end song is looping (result screen → until a new table opens)
   muted = typeof localStorage !== "undefined" && localStorage.getItem("gl:muted") === "1";
 
@@ -119,6 +120,8 @@ class DangerMusic {
   }
 
   setLevel(l: Level) {
+    if (this.latched && l >= 2) return;
+    if (l <= 1) this.latched = false;
     if (l === this.level && !this.ending) return;
     const wasOff = this.level === 0 && !this.ending;
     this.ending = false;
@@ -148,11 +151,12 @@ class DangerMusic {
   /** The music stops dead: a 0.45 s tape-stop, then silence. */
   stop() {
     // Musical chairs: the music dies on the exact frame the board freezes. A 12 ms fade only avoids a click.
-    if (!this.ctx) return void (this.level = 0);
+    if (!this.ctx) return void ((this.level = 0), (this.latched = true));
     const ctx = this.ctx;
     const t = ctx.currentTime;
     const FADE = 0.012;
     this.level = 0;
+    this.latched = true;
     this.halt();
     if (this.cur) {
       const { src, gain } = this.cur;

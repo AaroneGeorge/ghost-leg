@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import QRCode from "qrcode";
 import {
-  BASE_RPC, DELEGATION_PROGRAM_ID, ER_RPC, MIN_DANGER_SECS, PROGRAM_ID, RungSender, SNIPE_WINDOW_SECS,
-  baseConnection, decodeGame, erConnection, fetchGameAnywhere, short, sol, type GameState,
+  BASE_RPC, DELEGATION_PROGRAM_ID, ER_RPC, MAX_ROUND_SECS, MIN_ROUND_SECS, PROGRAM_ID, RungSender, dangerStartsAt, musicLevelAt,
+  baseConnection, chainNow, decodeGame, erConnection, fetchGameAnywhere, short, sol, syncChainClock, type GameState,
 } from "./lib/ghostleg";
 import { COLORS, Ladder } from "./Ladder";
+import { Ghost } from "./Pixel";
 import { music, type Level } from "./audio";
 import {
-  DEFAULT_PARAMS, addBots, armRound, botGap, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
+  DEFAULT_PARAMS, addBots, botGap, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
   type GameParams,
 } from "./actions";
 import { burnerWallet, hasPhantom, hasSession, loadBots, phantomWallet, recentGames, sessionFor, type AppWallet } from "./wallet";
@@ -85,7 +86,7 @@ export default function App() {
         </a>
         <div className="wallet">
           <button className="chip sound" title={muted ? "unmute" : "mute"} onClick={() => (music.unlock(), music.setMuted(!muted), setMuted(!muted))}>
-            {muted ? "🔇" : "🔊"}
+            {muted ? "♪ off" : "♪ on"}
           </button>
           <span className={`net`}>devnet · MagicBlock ER</span>
           <button className="chip" title="copy address" onClick={() => (navigator.clipboard.writeText(wallet.publicKey.toBase58()), say("Address copied"))}>
@@ -106,7 +107,7 @@ export default function App() {
       )}
       {toast && <div className="toast">{toast}</div>}
       <footer>
-        Every rung is a free transaction on a MagicBlock Ephemeral Rollup · the prize layout, the moment the music stops and the anti-snipe cut are
+        Every rung is a free transaction on a MagicBlock Ephemeral Rollup · the prize layout and the rung that counts are
         MagicBlock VRF · settles back to Solana · <a href={acct(PROGRAM_ID)} target="_blank">program</a>
       </footer>
     </div>
@@ -122,7 +123,7 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
   const create = async () => {
     setBusy(true);
     try {
-      const g = await createGame(wallet, p);
+      const g = await createGame(wallet, { ...p, duration: clampRound(p.duration) });
       location.hash = `#/g/${g.toBase58()}`;
     } catch (e) {
       say(`Create failed: ${String(e).slice(0, 140)}`);
@@ -133,20 +134,31 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
   return (
     <main className="home">
       <section className="hero">
-        <h1>
-          One ladder.<br />Keep the crown<br /><em>when the music stops.</em>
-        </h1>
+        <div className="hero-top">
+          <div className="poster" aria-hidden>
+            <span className="poster-tag">Let's play</span>
+            <div className="ghosts">
+              <Ghost color={COLORS[0]} look="down" size={92} />
+              <Ghost color={COLORS[1]} look="left" size={92} />
+              <Ghost color={COLORS[2]} look="up" size={92} />
+              <Ghost color={COLORS[3]} look="left" size={92} />
+            </div>
+            <span className="poster-tag end blink">Insert coin</span>
+          </div>
+          <h1>
+            One ladder.<br />One random rung<br /><em>decides it all.</em>
+          </h1>
+        </div>
         <p className="lede">
-          Ghost Leg (amidakuji) is the ladder lottery played across Japan and Korea, rebuilt as musical chairs. Every player owns a line, prizes sit
-          at the bottom, and everyone draws rungs that swap where the lines land. Pull the 👑 toward you, knock rivals off it, and be on it when
-          the music dies.
+          The ladder lottery of Japan and Korea, rebuilt as musical chairs. Draw rungs to swap where the lines land, pull the 👑 toward you and
+          hold it: when the music stops, VRF picks one rung and the board at that rung pays out.
         </p>
         <ol className="rules">
           <li><b>Stake</b> into a pot held by the program. Unused rungs are refunded.</li>
-          <li><b>VRF</b> shuffles the prizes the moment the round opens. No one knows the layout in advance.</li>
-          <li><b>Draw rungs</b>: each is a free transaction on a MagicBlock Ephemeral Rollup, confirmed in ~130&nbsp;ms, and grows the pot.</li>
-          <li><b>Danger zone.</b> The music speeds up. After {MIN_DANGER_SECS}s of warning, VRF is called live to decide when it stops: any second now. When it stops, the round is over.</li>
-          <li><b>No sniping.</b> A second VRF draw rewinds to a random rung inside the danger zone; rungs after it are void. Then Solana pays everyone.</li>
+          <li><b>VRF</b> shuffles the prizes the moment the round opens.</li>
+          <li><b>Draw rungs</b>: free ~130&nbsp;ms transactions on a MagicBlock Ephemeral Rollup. Each one grows the pot.</li>
+          <li><b>Danger zone</b>: the last third of the round plays danger levels 4 and 5. Rounds run {MIN_ROUND_SECS}–{MAX_ROUND_SECS}s.</li>
+          <li><b>One rung decides</b>: VRF picks any rung; the board right after it pays out, later rungs are void. Hold the crown longest for the best odds. Solana pays everyone.</li>
         </ol>
       </section>
       <section className="card create">
@@ -154,9 +166,9 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
         <label>Stake (SOL)<input type="number" step="0.01" value={p.stake} onChange={(e) => setP({ ...p, stake: +e.target.value })} /></label>
         <label>Rung price (SOL)<input type="number" step="0.0001" value={p.rungPrice} onChange={(e) => setP({ ...p, rungPrice: +e.target.value })} /></label>
         <label>Rung budget<input type="number" value={p.rungBudget} onChange={(e) => setP({ ...p, rungBudget: +e.target.value })} /></label>
-        <label>Longest round (s)<input type="number" value={p.duration} onChange={(e) => setP({ ...p, duration: +e.target.value })} /></label>
+        <label>Round length (s)<input type="number" min={MIN_ROUND_SECS} max={MAX_ROUND_SECS} value={p.duration} onChange={(e) => setP({ ...p, duration: +e.target.value })} onBlur={() => setP({ ...p, duration: clampRound(p.duration) })} /></label>
         <p className="muted">Each player deposits {deposit.toFixed(4)} SOL (stake + rung budget + a 0.002 session float).</p>
-        <button className="primary" disabled={busy} onClick={create}>{busy ? "Opening…" : "Open table"}</button>
+        <button className="primary" disabled={busy} onClick={create}>{busy ? "Opening…" : "Open table ▶"}</button>
       </section>
       {recent.length > 0 && (
         <section className="card">
@@ -184,10 +196,13 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const [where, setWhere] = useState<"er" | "base" | null>(null);
   const [step, setStep] = useState<string | null>(null);
   const [qr, setQr] = useState<string>("");
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(chainNow()); // rollup clock, the one the program closes the ladder on
   const [sigs, setSigs] = useState<{ finish?: string; settle?: string; pay?: string }>({});
   const gameRef = useRef<GameState | null>(null);
   gameRef.current = game;
+  // set once, the instant the music stops: from then on nothing on this table moves or takes input
+  const halted = useRef(false);
+  const [isHalted, setHalted] = useState(false);
 
   // ── optimistic rungs: a rung shows (and moves the paths) the moment it is sent, so rapid presses
   // each aim from the latest position instead of from the last chain snapshot.
@@ -204,7 +219,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     const rungs = [...g.rungs];
     const ends = [...g.ends];
     const players = g.players.map((p) => ({ ...p }));
-    const t = Math.max(0, Math.floor(now / 1000 - g.startTs));
+    const t = Math.max(0, Math.floor(chainNow() / 1000 - g.startTs));
     for (const p of pendingRef.current) {
       [ends[p.gap], ends[p.gap + 1]] = [ends[p.gap + 1], ends[p.gap]];
       rungs.push({ gap: p.gap, player: p.player, t });
@@ -275,11 +290,12 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   }, [address, ingest]);
 
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 100);
+    void syncChainClock(erConnection()).catch(() => 0);
+    const t = setInterval(() => setNow(chainNow()), 100);
     return () => clearInterval(t);
   }, []);
   useEffect(() => {
-    QRCode.toDataURL(location.href, { margin: 1, width: 220, color: { dark: "#e8e6ff", light: "#00000000" } }).then(setQr);
+    QRCode.toDataURL(location.href, { margin: 1, width: 220, color: { dark: "#ffffff", light: "#00000000" } }).then(setQr);
   }, []);
 
   const me = game ? game.players.findIndex((p) => p.wallet.equals(wallet.publicKey) || (session && p.session.equals(session.publicKey))) : -1;
@@ -300,7 +316,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const addRung = useCallback(
     (gap: number) => {
       const g = gameRef.current;
-      if (!g || g.status !== "Live" || me < 0 || !sender || Date.now() >= g.endTs * 1000) return;
+      if (!g || g.status !== "Live" || me < 0 || !sender || halted.current || chainNow() >= g.endTs * 1000) return;
       if (g.players[me].rungsUsed >= g.rungBudget) return say("Out of rungs");
       addLocal(me, gap);
       sender.add(gap).catch((e) => say(String(e).slice(0, 120)));
@@ -309,7 +325,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   );
   const pull = useCallback(() => {
     const g = gameRef.current;
-    if (!g || g.status !== "Live" || Date.now() >= g.endTs * 1000) return;
+    if (!g || g.status !== "Live" || halted.current || chainNow() >= g.endTs * 1000) return;
     const gap = pullGap(g, me);
     if (gap === null) return say("You're on the 👑 — defend it!");
     addRung(gap);
@@ -333,7 +349,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
       const temper = 260 + k * 90 + Math.random() * 200;
       while (!stop) {
         const g = gameRef.current;
-        if (!g || g.status !== "Live" || Date.now() > g.endTs * 1000) break;
+        if (!g || g.status !== "Live" || halted.current || chainNow() >= g.endTs * 1000) break;
         const idx = g.players.findIndex((p) => p.wallet.equals(b.wallet.publicKey));
         if (idx >= 0 && g.players[idx].rungsUsed < g.rungBudget) {
           const gap = botGap(g, idx);
@@ -354,15 +370,8 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   // ── automation: finish after the bell, then settle + pay (host first, others as backup)
   const finishing = useRef(0);
   const settling = useRef(0);
-  const arming = useRef(0);
   useEffect(() => {
     if (!game || !session || me < 0) return;
-    // musical chairs: danger zone + MIN_DANGER_SECS -> ask VRF when the music stops (host first, others as backup)
-    const armAt = (game.startTs + game.durationSecs - SNIPE_WINDOW_SECS + MIN_DANGER_SECS) * 1000;
-    if (game.status === "Live" && game.stop !== "stopSet" && now >= armAt && now < game.endTs * 1000 && now - arming.current > 4000) {
-      arming.current = now;
-      setTimeout(() => void armRound(session, address), isHost ? 0 : 1500 + Math.random() * 1500);
-    }
     if (game.status === "Live" && now > game.endTs * 1000 + 300 && now - finishing.current > 15_000) {
       finishing.current = now;
       setTimeout(async () => {
@@ -384,49 +393,53 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   // ── music: level 1 in the lobby, 2-3 while live, 4-5 in the danger zone, a tape-stop when the round ends
   // (the VRF-chosen second), and a sting on the reveal.
   const sawLive = useRef(false);
-  const stopped = useRef(false);
   const stung = useRef(false);
   const stopAt = useRef(0);
   const frozen = useRef<GameState | null>(null); // the board as it was the instant the music stopped
-  const dangerAt = game ? (game.startTs + game.durationSecs - SNIPE_WINDOW_SECS) * 1000 : 0;
-  const musicOver = !!game && game.status === "Live" && now >= game.endTs * 1000;
-  // re-render exactly at the stop second, so the board freezes and the music dies on the same frame
+  const dangerAt = game ? (game.startTs + dangerStartsAt(game.durationSecs)) * 1000 : 0;
+  // The one place the round stops: board snapshot, input lock and music cut happen in the same call,
+  // and the render that follows shows the frozen board. Nothing can restart the music afterwards.
+  const halt = useCallback(() => {
+    if (halted.current) return;
+    halted.current = true;
+    if (sawLive.current) stopAt.current = chainNow(); // the banner is for a stop you were there for
+    frozen.current = gameRef.current;
+    if (sawLive.current) music.stop();
+    else music.setLevel(0);
+    setHalted(true);
+    setNow(chainNow());
+  }, []);
+  const musicOver = !!game && game.status === "Live" && isHalted;
+  // fire exactly at the stop second on the rollup clock (re-armed if a timer wakes a hair early)
   const liveEnd = game && game.status === "Live" ? game.endTs * 1000 : 0;
   useEffect(() => {
-    if (!liveEnd) return;
-    const t = setTimeout(() => {
-      if (sawLive.current && !stopped.current) {
-        stopped.current = true;
-        stopAt.current = Date.now();
-        frozen.current = gameRef.current;
-        music.stop(); // same tick as the freeze below
-      }
-      setNow(Date.now());
-    }, Math.max(0, liveEnd - Date.now()));
+    if (!liveEnd || halted.current) return;
+    let t = 0;
+    const check = () => {
+      const left = liveEnd - chainNow();
+      if (left <= 0) halt();
+      else t = window.setTimeout(check, left);
+    };
+    check();
     return () => clearTimeout(t);
-  }, [liveEnd]);
+  }, [liveEnd, halt]);
   useEffect(() => {
     if (!game) return;
     const s = game.status;
     if (s === "Lobby" || s === "Drawing") return music.setLevel(1);
-    if (s === "Live" && !musicOver) {
+    if (s === "Live" && !halted.current) {
+      if (now >= game.endTs * 1000) return halt(); // backup for a timer the tab throttled
       sawLive.current = true;
-      const start = game.startTs * 1000;
-      const lvl: Level = now < dangerAt ? (now < start + (dangerAt - start) / 2 ? 2 : 3) : now < dangerAt + MIN_DANGER_SECS * 1000 ? 4 : 5;
+      const lvl: Level = musicLevelAt(Math.max(0, now / 1000 - game.startTs), game.durationSecs);
       return music.setLevel(lvl);
     }
-    if (sawLive.current && !stopped.current) {
-      stopped.current = true;
-      stopAt.current = Date.now();
-      frozen.current = gameRef.current;
-      music.stop();
-    } else if (!sawLive.current) music.setLevel(0);
+    if (s !== "Live") halt(); // round ended while we were away: freeze without a level change
     if ((s === "Settled" || s === "Paid") && sawLive.current && !stung.current) {
       stung.current = true;
       const top = game.prizeBps.indexOf(Math.max(...game.prizeBps));
       setTimeout(() => mounted.current && music.sting(me >= 0 && game.ends[top] === me), 900);
     }
-  }, [game, now, musicOver, dangerAt, me]);
+  }, [game, now, dangerAt, me, halt]);
   // the end song belongs to the result screen only: leaving it (home, another table) goes back to level 1
   const mounted = useRef(true);
   useEffect(
@@ -469,6 +482,8 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     }
   };
 
+  // while the music is stopped the table shows (and counts) exactly what it showed at the stop
+  const board = (musicOver || game.status === "Cutting") && frozen.current ? frozen.current : game;
   const mySlot = me >= 0 ? game.ends.indexOf(me) : -1;
   const myBps = mySlot >= 0 ? game.prizeBps[mySlot] ?? 0 : 0;
   const settled = game.status === "Settled" || (game.status === "Paid" && game.startTs > 0);
@@ -487,26 +502,27 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
           )}
           {game.status === "Live" && !musicOver && now >= dangerAt && (
             <div className="timer danger">
-              ♪ ? ? ?<small>the music can stop any second</small>
+              {Math.max(0, Math.ceil((game.endTs * 1000 - now) / 1000))}s<small>until the music stops</small>
             </div>
           )}
           {(musicOver || game.status === "Cutting") && <div className="timer stopped">■ STOP</div>}
           <div className="pot">
             pot <b>{sol(settled ? game.pot : livePot).toFixed(4)}</b> SOL
           </div>
-          <div className="rungcount">{game.rungs.length} rungs</div>
+          <div className="rungcount">{board.rungs.length} rungs</div>
         </div>
         <Ladder
-          game={(musicOver || game.status === "Cutting") && frozen.current ? frozen.current : game}
+          game={board}
           me={me}
           names={names}
           interactive={game.status === "Live" && !musicOver && me >= 0}
+          paused={musicOver || game.status === "Cutting"}
           onGap={addRung}
         />
         {(musicOver || game.status === "Cutting" || (stopAt.current > 0 && now - stopAt.current < 2500)) && (
           <div className="stop-flash">
             THE MUSIC STOPPED
-            {(musicOver || game.status === "Cutting") && <small>VRF is rewinding the tape…</small>}
+            {(musicOver || game.status === "Cutting") && <small>VRF is picking the rung that counts…</small>}
           </div>
         )}
         {game.status === "Live" && !musicOver && me >= 0 && (
@@ -518,6 +534,12 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
               you land on <b style={{ color: COLORS[me % COLORS.length] }}>{(myBps / 100).toFixed(0)}%</b> · rungs left{" "}
               <b>{game.rungBudget - game.players[me].rungsUsed}</b>
             </div>
+          </div>
+        )}
+        {settled && (
+          <div className="controls">
+            <a className="primary as-button again" href="#/">New table ▶</a>
+            <div className="mine">{game.status === "Paid" ? "Paid out on Solana ✓" : "Settling on Solana…"}</div>
           </div>
         )}
         {step && <div className="step">{step}</div>}
@@ -564,8 +586,11 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
             const bps = game.prizeBps[slot] ?? 0;
             return (
               <div className="player" key={i}>
-                <span className="dot" style={{ background: COLORS[i % COLORS.length] }} />
-                <span className="pname">{i === me ? "YOU" : names[i]}</span>
+                <Ghost className="dot" color={COLORS[i % COLORS.length]} size={22} walk={false} />
+                <span className="pname">
+                  <span>{i === me ? "YOU" : names[i].replace(/^🤖 /, "")}</span>
+                  {names[i].startsWith("🤖") && !settled && <small className="cpu">cpu</small>}
+                </span>
                 <span className="muted">{p.rungsUsed} rungs</span>
                 {settled ? (
                   <b className={p.payout > 0n ? "win" : ""}>{sol(p.payout).toFixed(4)} SOL</b>
@@ -584,8 +609,8 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
               Prize layout VRF <code>{hex(game.startRandomness)}</code>
             </p>
             <p>
-              Music stopped {game.endTs - game.startTs}s in (stop VRF, drawn live in the danger zone). Cut VRF <code>{hex(game.cutRandomness)}</code> → rewound to rung{" "}
-              <b>{game.cutoff}</b> of {game.rungs.length}. Rungs below the line are void.
+              The music played {game.endTs - game.startTs}s. Cut VRF <code>{hex(game.cutRandomness)}</code> → picked rung{" "}
+              <b>{game.cutoff}</b> of {game.rungs.length} (any rung could be picked). Rungs below the line are void.
             </p>
             <p className="links">
               <a href={acct(address, where === "er")} target="_blank">game account</a>
@@ -593,8 +618,6 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
               {sigs.settle && <a href={erTx(sigs.settle)} target="_blank">commit tx (ER)</a>}
               {sigs.pay && <a href={baseTx(sigs.pay)} target="_blank">payout tx (Solana)</a>}
             </p>
-            {game.status === "Paid" ? <p className="win">Paid out on Solana ✓</p> : <p className="muted">Settling on Solana…</p>}
-            <a className="primary as-button" href="#/">New table</a>
           </div>
         )}
         <p className="muted tiny">
@@ -606,26 +629,25 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   );
 }
 
+const clampRound = (d: number) => Math.min(MAX_ROUND_SECS, Math.max(MIN_ROUND_SECS, Math.round(d) || 45));
 const hex = (b: number[]) => b.slice(0, 8).map((x) => x.toString(16).padStart(2, "0")).join("") + "…";
 function statusLine(s: GameState["status"]) {
   switch (s) {
     case "Lobby": return "Lobby · waiting for players";
     case "Drawing": return "VRF is shuffling the prizes…";
     case "Live": return "Live";
-    case "Cutting": return "Music stopped · VRF is rewinding the tape…";
+    case "Cutting": return "Music stopped · VRF is picking the rung…";
     case "Settled": return "The ladder speaks";
     case "Paid": return "Closed: paid out on Solana";
   }
 }
 
-/** Wide-tracked wordmark; the O is a ringed dot. */
+/** Pixel wordmark with the house ghost. */
 function Brand() {
-  const word = "GHOST LEG";
   return (
     <span className="wordmark">
-      {word.split("").map((c, i) =>
-        c === "O" ? <span key={i} className="ring-o" /> : <span key={i}>{c === " " ? "\u00a0" : c}</span>,
-      )}
+      <Ghost color={COLORS[0]} size={30} look="right" />
+      <span>Ghost Leg</span>
     </span>
   );
 }

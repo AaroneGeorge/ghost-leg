@@ -9,6 +9,7 @@ import {
   Transaction,
   TransactionInstruction,
   LAMPORTS_PER_SOL,
+  SYSVAR_CLOCK_PUBKEY,
 } from "@solana/web3.js";
 import idl from "./ghost_leg.json";
 import type { GhostLeg } from "./ghost_leg_types";
@@ -22,13 +23,50 @@ export const ROUTER_RPC = "https://devnet-router.magicblock.app/";
 /** devnet-as validator identity (getIdentity on 2026-11-25) */
 export const ER_VALIDATOR = new PublicKey("MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57");
 export const EXPLORER = "https://explorer.solana.com";
-export const SNIPE_WINDOW_SECS = 15;
-/** The danger zone always plays at least this long before the music may stop (mirrors the program). */
-export const MIN_DANGER_SECS = 5;
+/** Round length limits (mirror the program). */
+export const MIN_ROUND_SECS = 20;
+export const MAX_ROUND_SECS = 60;
+
+/** The music plays the whole round: level 2, then 3, then the danger zone (the last third) with 4, then 5. */
+export function musicLevelAt(elapsedSecs: number, durationSecs: number): 2 | 3 | 4 | 5 {
+  const f = elapsedSecs / durationSecs;
+  return f < 1 / 3 ? 2 : f < 2 / 3 ? 3 : f < 5 / 6 ? 4 : 5;
+}
+/** seconds into the round where the danger zone (level 4) starts */
+export const dangerStartsAt = (durationSecs: number) => (durationSecs * 2) / 3;
+
+// ───────────── rollup clock ─────────────
+// The program closes the ladder on the rollup's clock (unix seconds), so the browser schedules the music stop
+// on that clock too, not on its own (a laptop clock can be off by seconds).
+let clockOffsetMs = 0;
+/** milliseconds on the rollup clock */
+export const chainNow = () => Date.now() + clockOffsetMs;
+/** Watches the rollup Clock sysvar tick over to the next second and records the offset (±RTT/2). */
+export async function syncChainClock(conn: Connection, budgetMs = 4000): Promise<number> {
+  const read = async () => {
+    const a = Date.now();
+    const info = await conn.getAccountInfo(SYSVAR_CLOCK_PUBKEY, "processed");
+    const b = Date.now();
+    if (!info) throw new Error("no clock sysvar");
+    const d = info.data as Uint8Array;
+    return { ts: Number(new DataView(d.buffer, d.byteOffset, d.byteLength).getBigInt64(32, true)), mid: (a + b) / 2, rtt: b - a };
+  };
+  const t0 = Date.now();
+  let prev = await read();
+  while (Date.now() - t0 < budgetMs) {
+    const r = await read();
+    if (r.ts !== prev.ts) {
+      // the second ticked over somewhere between the previous read and this one
+      if (r.rtt < 400) clockOffsetMs = Math.round(r.ts * 1000 - (prev.mid + r.mid) / 2);
+      return clockOffsetMs;
+    }
+    prev = r;
+    await new Promise((ok) => setTimeout(ok, 40));
+  }
+  return clockOffsetMs;
+}
 
 export const STATUS = ["Lobby", "Drawing", "Live", "Cutting", "Settled", "Paid"] as const;
-// on-chain live sub-states 6 (ARMING: stop VRF pending) and 7 (STOP_SET: end_ts is final) decode as "Live"
-const LIVE_SUBSTATES: Record<number, "arming" | "stopSet"> = { 6: "arming", 7: "stopSet" };
 export type StatusName = (typeof STATUS)[number];
 
 export type PlayerSlot = {
@@ -44,7 +82,6 @@ export type GameState = {
   gameId: bigint;
   status: StatusName;
   /** while Live: has the stop VRF been requested / answered? (until then endTs is only the hard cap) */
-  stop: "open" | "arming" | "stopSet";
   stake: bigint;
   rungPrice: bigint;
   rungBudget: number;
@@ -91,8 +128,7 @@ export function decodeGame(address: PublicKey, data: Buffer): GameState {
     address,
     host: g.host,
     gameId: big(g.gameId),
-    status: LIVE_SUBSTATES[g.status] ? "Live" : (STATUS[g.status] ?? "Lobby"),
-    stop: LIVE_SUBSTATES[g.status] ?? "open",
+    status: STATUS[g.status] ?? "Lobby",
     stake: big(g.stake),
     rungPrice: big(g.rungPrice),
     rungBudget: g.rungBudget,
@@ -163,8 +199,6 @@ export const ix = {
     program.methods.start(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   addRung: (signer: PublicKey, game: PublicKey, gap: number) =>
     program.methods.addRung(gap).accountsPartial({ signer, game }).instruction(),
-  arm: (payer: PublicKey, game: PublicKey) =>
-    program.methods.arm(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   finish: (payer: PublicKey, game: PublicKey) =>
     program.methods.finish(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   settle: (payer: PublicKey, game: PublicKey) =>

@@ -4,7 +4,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
 import {
   RungSender, baseConnection, delegationStatus, erConnection, fetchGame, gamePda, ix, keypairSigner,
-  lamports, replayEnds, send, short, sol, transfer, STATUS, MIN_DANGER_SECS, SNIPE_WINDOW_SECS,
+  lamports, replayEnds, send, short, sol, transfer, STATUS,
 } from "../src/lib/ghostleg";
 
 const DURATION = Number(process.env.DURATION ?? 25);
@@ -95,27 +95,7 @@ async function bot(i: number) {
     await sleep(150 + Math.random() * 400);
   }
 }
-// musical chairs: once the danger zone has played MIN_DANGER_SECS, ask VRF when the music stops
-async function armer() {
-  const armAt = (g.startTs + g.durationSecs - SNIPE_WINDOW_SECS + MIN_DANGER_SECS) * 1000;
-  while (Date.now() < armAt) await sleep(100);
-  for (let i = 0; i < 40; i++) {
-    try {
-      log("arm (VRF stop requested)", await send(er, [await ix.arm(sessions[1].publicKey, game)], keypairSigner(sessions[1])));
-      break;
-    } catch (e) {
-      if (String(e).includes("0x177f")) { await sleep(300); continue; } // TooEarly: ER clock catching up
-      log("arm err", String(e).slice(0, 160));
-      break;
-    }
-  }
-  const s = await waitFor("stop set", async () => {
-    const c = await fetchGame(er, game);
-    return c && c.stop === "stopSet" ? c : null;
-  }, 20_000, 150);
-  log(`STOP SET by VRF: music stops ${s.endTs - s.startTs}s into the round (danger zone from ${s.durationSecs - SNIPE_WINDOW_SECS}s, cap ${s.durationSecs}s)`);
-}
-await Promise.all([...wallets.map((_, i) => bot(i)), armer()]);
+await Promise.all(wallets.map((_, i) => bot(i)));
 g = (await fetchGame(er, game))!;
 log(`frenzy over: sent ${sent}, on-chain rungs ${g.rungs.length}; confirm latency ms`, latencies);
 

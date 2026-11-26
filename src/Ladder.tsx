@@ -1,14 +1,17 @@
 import { useMemo, useState } from "react";
-import { SNIPE_WINDOW_SECS, type GameState } from "./lib/ghostleg";
+import { type GameState } from "./lib/ghostleg";
+import { CrownSprite, GhostSprite, type Look } from "./Pixel";
 
-// flat palette: coral + mint lead (players 1 and 2), then sky, sun, lilac, peach
-export const COLORS = ["#ff4d6d", "#6bffa0", "#4cc9ff", "#ffd166", "#b794ff", "#ff9f6b"];
+// arcade palette: red, orange, teal, pink lead; then lemon and blue for tables of five and six
+export const COLORS = ["#e8352b", "#f6ad44", "#6cc6ba", "#f2b6c9", "#f7e04a", "#5b8cff"];
 
 type Props = {
   game: GameState;
   me: number;
   names: string[];
   interactive: boolean;
+  /** the music stopped: everything holds still (the ghosts stop walking) */
+  paused?: boolean;
   onGap?: (gap: number) => void;
 };
 
@@ -26,7 +29,7 @@ export function initials(names: string[]): string[] {
   return clean.map((n, i) => (one.filter((x) => x === one[i]).length > 1 ? n.slice(0, 1).toUpperCase() + n.slice(1, 2).toLowerCase() : one[i]));
 }
 
-export function Ladder({ game, me, names, interactive, onGap }: Props) {
+export function Ladder({ game, me, names, interactive, paused = false, onGap }: Props) {
   const n = game.nPlayers;
   // a cancelled table is also "Paid" but never started: no reveal for it
   const settled = (game.status === "Settled" || game.status === "Paid") && game.startTs > 0;
@@ -37,14 +40,6 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
   const y = (k: number) => TOP + (k + 1) * rowH;
   const applied = settled ? game.cutoff : rungs.length;
   const [hover, setHover] = useState<number | null>(null);
-  const ini = useMemo(() => initials(names), [names.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // index of the first rung inside the danger zone (the VRF cut lands at or after it)
-  const windowStart = useMemo(() => {
-    const t0 = Math.max(0, game.durationSecs - SNIPE_WINDOW_SECS);
-    const k = rungs.findIndex((r) => r.t >= t0);
-    return k < 0 ? rungs.length : k;
-  }, [rungs, game.durationSecs]);
 
   const paths = useMemo(() => {
     return Array.from({ length: n }, (_, p) => {
@@ -68,7 +63,14 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
   const bestBps = Math.max(...game.prizeBps, 0);
   const winner = settled ? game.ends[game.prizeBps.indexOf(bestBps)] : -1;
   const live = game.status === "Live";
+  const walking = live && !paused;
+  const landing = useMemo(() => {
+    const out: number[] = [];
+    game.ends.forEach((p, slot) => (out[p] = slot));
+    return out;
+  }, [game.ends]);
   const known = game.status !== "Lobby" && game.status !== "Drawing" && game.startTs > 0;
+  const topSlot = known ? game.prizeBps.indexOf(bestBps) : -1;
 
   // Widths follow row height so a crowded ladder stays readable instead of merging into a block.
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -81,17 +83,17 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
 
   return (
     <svg className="ladder" viewBox={`0 0 ${W} ${TOP + BODY + BOTTOM}`} role="img" aria-label="Ghost Leg ladder">
-      {/* reveal only: the danger zone the VRF cut could land in */}
-      {settled && windowStart < rungs.length && (
-        <rect x={PAD - 44} y={y(windowStart) - rowH / 2} width={W - 2 * PAD + 88} height={TOP + BODY - (y(windowStart) - rowH / 2)} rx={14} className="dangerzone" />
+      {/* reveal only: everything below the VRF cut is void */}
+      {settled && game.cutoff < rungs.length && (
+        <rect x={PAD - 44} y={y(game.cutoff) - rowH / 2} width={W - 2 * PAD + 88} height={TOP + BODY - (y(game.cutoff) - rowH / 2)} className="dangerzone" />
       )}
 
       {/* rails: faint line + a grid of dim dots */}
       {Array.from({ length: n }, (_, c) => (
         <g key={c}>
-          <line x1={x(c)} y1={TOP} x2={x(c)} y2={TOP + BODY} className="rail" />
+          <line x1={x(c)} y1={TOP} x2={x(c)} y2={TOP + BODY} className="rail" shapeRendering="crispEdges" />
           {Array.from({ length: GRID_DOTS }, (_, k) => (
-            <circle key={k} cx={x(c)} cy={TOP + ((k + 0.5) * BODY) / GRID_DOTS} r={7} className="grid-dot" />
+            <rect key={k} x={x(c) - 4} y={TOP + ((k + 0.5) * BODY) / GRID_DOTS - 4} width={8} height={8} className="grid-dot" />
           ))}
         </g>
       ))}
@@ -103,11 +105,11 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
         const cls = void_ ? "rung rung-void" : settled ? "rung rung-dim" : k === rungs.length - 1 && live ? "rung rung-new" : "rung";
         return (
           <g key={k} className={cls}>
-            <line x1={x(r.gap)} x2={x(r.gap + 1)} y1={y(k)} y2={y(k)} stroke={col} strokeWidth={rungW} strokeDasharray={void_ ? "3 5" : undefined} />
+            <line x1={x(r.gap)} x2={x(r.gap + 1)} y1={y(k)} y2={y(k)} stroke={col} strokeWidth={rungW} strokeDasharray={void_ ? "4 6" : undefined} shapeRendering="crispEdges" />
             {rungDot > 0 && !void_ && (
               <>
-                <circle cx={x(r.gap)} cy={y(k)} r={rungDot} fill={col} />
-                <circle cx={x(r.gap + 1)} cy={y(k)} r={rungDot} fill={col} />
+                <rect x={x(r.gap) - rungDot} y={y(k) - rungDot} width={rungDot * 2} height={rungDot * 2} fill={col} />
+                <rect x={x(r.gap + 1) - rungDot} y={y(k) - rungDot} width={rungDot * 2} height={rungDot * 2} fill={col} />
               </>
             )}
           </g>
@@ -119,7 +121,7 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
         <g className="cutline">
           <line x1={PAD - 44} x2={W - PAD + 44} y1={y(game.cutoff) - rowH / 2} y2={y(game.cutoff) - rowH / 2} />
           <text x={PAD - 44} y={y(game.cutoff) - rowH / 2 - 8}>
-            ✂ VRF cut · rung {game.cutoff}/{rungs.length}
+            &gt; VRF cut · rung {game.cutoff}/{rungs.length}
           </text>
         </g>
       )}
@@ -135,7 +137,7 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
           return (
             <g key={`${i}-${settled}`} className={settled ? (i === winner ? "pathg winner" : "pathg thin") : "pathg"}>
               <path d={p.d} pathLength={1} className={settled ? "path reveal" : "path"} stroke={col} style={{ strokeWidth: w, animationDelay: settled ? `${i === winner ? 1.4 : i * 0.2}s` : undefined }} />
-              {nodeR > 0 && (!settled || i === winner) && p.turns.map(([a, b], k) => <circle key={k} cx={a} cy={b} r={settled ? nodeR * 1.05 : nodeR} fill={col} className={settled ? "node reveal-node" : "node"} />)}
+              {nodeR > 0 && (!settled || i === winner) && p.turns.map(([a, b], k) => <rect key={k} x={a - nodeR} y={b - nodeR} width={nodeR * 2} height={nodeR * 2} fill={col} className={settled ? "node reveal-node" : "node"} />)}
             </g>
           );
         })}
@@ -144,21 +146,20 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
       {interactive &&
         Array.from({ length: n - 1 }, (_, gap) => (
           <g key={gap} onPointerEnter={() => setHover(gap)} onPointerLeave={() => setHover(null)} onPointerDown={() => onGap?.(gap)}>
-            <rect x={x(gap) + 10} y={TOP} width={x(gap + 1) - x(gap) - 20} height={BODY} rx={12} className={hover === gap ? "hit hit-on" : "hit"} />
+            <rect x={x(gap) + 10} y={TOP} width={x(gap + 1) - x(gap) - 20} height={BODY} className={hover === gap ? "hit hit-on" : "hit"} />
           </g>
         ))}
 
-      {/* players on top */}
+      {/* players on top: a ghost each, eyes on the crown */}
       {Array.from({ length: n }, (_, i) => {
         const col = COLORS[i % COLORS.length];
+        const at = landing[i];
+        const look: Look = !known || settled || topSlot < 0 || at === topSlot ? "down" : topSlot < at ? "left" : "right";
         return (
-          <g key={i} transform={`translate(${x(i)},${TOP - 34})`}>
-            {i === me && <circle r={27} fill="none" stroke={col} strokeWidth={3} />}
-            <circle r={20} fill={col} />
-            <text y={5} textAnchor="middle" className="avatar-text">
-              {ini[i]}
-            </text>
-            <text y={-36} textAnchor="middle" className="name">
+          <g key={i} transform={`translate(${x(i)},${TOP - 30})`} className={walking ? "walking" : undefined} style={{ animationDelay: `${i * -0.13}s` }}>
+            {i === me && <rect x={-29} y={-29} width={58} height={58} fill="none" stroke={col} strokeWidth={3} className="me-box" shapeRendering="crispEdges" />}
+            <GhostSprite px={3} color={col} look={look} walk={walking} />
+            <text y={-38} textAnchor="middle" className="name">
               {i === me ? "YOU" : names[i]?.replace(/^🤖 /, "")}
             </text>
           </g>
@@ -172,25 +173,16 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
         const top = known && bps === bestBps && bps > 0;
         const oc = COLORS[owner % COLORS.length];
         return (
-          <g key={slot} transform={`translate(${x(slot)},${TOP + BODY + 44})`}>
-            {top && <circle r={31} className="prize-ring" />}
-            <circle r={24} className={top ? "prize prize-top" : "prize"} />
+          <g key={slot} transform={`translate(${x(slot)},${TOP + BODY + 40})`}>
+            {top && <rect x={-31} y={-27} width={62} height={54} className="prize-ring" shapeRendering="crispEdges" />}
+            <rect x={-25} y={-21} width={50} height={42} className={top ? "prize prize-top" : "prize"} shapeRendering="crispEdges" />
             <text y={top ? 13 : 5} textAnchor="middle" className={top ? "prize-text prize-text-top" : "prize-text"}>
               {known ? `${(bps / 100).toFixed(0)}%` : "?"}
             </text>
-            {top && (
-              <text y={-3} textAnchor="middle" className="crown">
-                👑
-              </text>
-            )}
+            {top && <CrownSprite cx={0} cy={-7} px={2.4} color="#15130e" />}
             {known && (
-              <g transform="translate(0,44)" className={settled && owner === winner ? "owner owner-win" : "owner"}>
-                <circle r={settled ? 11 : 6} fill={oc} />
-                {settled && (
-                  <text y={4} textAnchor="middle" className="owner-text">
-                    {ini[owner]}
-                  </text>
-                )}
+              <g transform="translate(0,46)" className={settled && owner === winner ? "owner owner-win" : "owner"}>
+                <GhostSprite px={settled ? 1.5 : 1.1} color={oc} walk={false} eyes={settled} />
               </g>
             )}
           </g>

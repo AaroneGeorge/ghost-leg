@@ -3,7 +3,7 @@
 //! Lifecycle
 //!   base layer : create_game -> join (xN) -> delegate_game
 //!   ER         : start (VRF #1: prize layout) -> add_rung (xMany, free) ->
-//!                finish (VRF #2: anti-snipe cut-off) -> settle_and_undelegate
+//!                finish at end_ts (VRF #2: the cut, any rung of the ladder) -> settle_and_undelegate
 //!   base layer : payout
 //!
 //! Every lamport stays inside the game PDA until `payout`; the ER only
@@ -27,10 +27,9 @@ declare_id!("DhS45bjZe13UqRbdoJZx5WK8rxmhG5VspmAUZU9F2yG8");
 pub const GAME_SEED: &[u8] = b"ghostleg";
 pub const MAX_PLAYERS: usize = 6;
 pub const MAX_RUNGS: usize = 1200;
-/// The VRF cut-off lands somewhere inside this many final seconds of the round.
-pub const SNIPE_WINDOW_SECS: u16 = 15;
-/// The danger zone always plays at least this long before the music may stop.
-pub const MIN_DANGER_SECS: u16 = 5;
+/// Round length limits: long enough to climb through all five music levels, never more than a minute.
+pub const MIN_ROUND_SECS: u16 = 20;
+pub const MAX_ROUND_SECS: u16 = 60;
 /// Lamports sent to each player's session key so it can sign ER transactions.
 pub const SESSION_FUND_LAMPORTS: u64 = 2_000_000;
 
@@ -48,12 +47,6 @@ pub mod status {
     pub const CUTTING: u8 = 3; // VRF #2 pending
     pub const SETTLED: u8 = 4;
     pub const PAID: u8 = 5;
-    // Live sub-states (rungs still allowed). LIVE above = the stop is not decided yet.
-    pub const ARMING: u8 = 6; // danger zone + MIN_DANGER_SECS reached, stop VRF pending
-    pub const STOP_SET: u8 = 7; // VRF picked the stop: end_ts is final
-    pub fn playable(s: u8) -> bool {
-        s == LIVE || s == ARMING || s == STOP_SET
-    }
 }
 
 #[ephemeral]
@@ -74,7 +67,7 @@ pub mod ghost_leg {
         require!(stake > 0, GhostLegError::BadConfig);
         require!(rung_budget > 0 && (rung_budget as usize) <= MAX_RUNGS, GhostLegError::BadConfig);
         require!(
-            duration_secs > SNIPE_WINDOW_SECS && duration_secs <= 600,
+            (MIN_ROUND_SECS..=MAX_ROUND_SECS).contains(&duration_secs),
             GhostLegError::BadConfig
         );
         let g = &mut ctx.accounts.game;
@@ -224,51 +217,20 @@ pub mod ghost_leg {
         g.start_randomness = randomness;
         let now = Clock::get()?.unix_timestamp;
         g.start_ts = now;
-        // The stop is NOT decided here: it is drawn live by `arm` once the danger zone has played
-        // MIN_DANGER_SECS. Until then end_ts is only the hard cap (the advertised duration).
+        // The music plays the whole round: it stops at exactly end_ts, known to everyone.
         g.end_ts = now + g.duration_secs as i64;
         g.status = status::LIVE;
-        msg!("ghostleg: live, hard cap {}", g.end_ts);
-        Ok(())
-    }
-
-    /// Musical chairs: once the danger zone has played MIN_DANGER_SECS, any player asks VRF when the
-    /// music stops. The callback picks 0..=(SNIPE_WINDOW_SECS - MIN_DANGER_SECS) more seconds.
-    pub fn arm(ctx: Context<RequestVrf>, client_seed: u8) -> Result<()> {
-        {
-            let payer = ctx.accounts.payer.key();
-            let g = &mut ctx.accounts.game;
-            // ARMING is allowed again so a lost VRF request can be re-sent; the first callback wins.
-            require!(g.status == status::LIVE || g.status == status::ARMING, GhostLegError::WrongStatus);
-            require!(g.is_member(&payer), GhostLegError::NotPlayer);
-            let now = Clock::get()?.unix_timestamp;
-            let arm_at = g.start_ts + (g.duration_secs - SNIPE_WINDOW_SECS + MIN_DANGER_SECS) as i64;
-            require!(now >= arm_at, GhostLegError::TooEarly);
-            require!(now <= g.end_ts, GhostLegError::RoundOver);
-            g.status = status::ARMING;
-        }
-        let disc = instruction::ArmCallback::DISCRIMINATOR.to_vec();
-        request_vrf(&ctx, disc, client_seed)
-    }
-
-    pub fn arm_callback(ctx: Context<VrfCallback>, randomness: [u8; 32]) -> Result<()> {
-        let g = &mut ctx.accounts.game;
-        require!(g.status == status::ARMING, GhostLegError::WrongStatus); // idempotent: decided once
-        let now = Clock::get()?.unix_timestamp;
-        let spread = (SNIPE_WINDOW_SECS - MIN_DANGER_SECS + 1) as u64;
-        let more = (u64::from_le_bytes(randomness[..8].try_into().unwrap()) % spread) as i64;
-        g.end_ts = (now + more).min(g.end_ts); // never past the advertised duration
-        g.status = status::STOP_SET;
-        msg!("ghostleg: VRF says the music stops in {}s (at {})", more, g.end_ts);
+        msg!("ghostleg: live until {}", g.end_ts);
         Ok(())
     }
 
     /// The frenzy: a rung between column `gap` and `gap + 1`, appended at the bottom.
     pub fn add_rung(ctx: Context<AddRung>, gap: u8) -> Result<()> {
         let g = &mut ctx.accounts.game;
-        require!(status::playable(g.status), GhostLegError::WrongStatus);
+        require!(g.status == status::LIVE, GhostLegError::WrongStatus);
         let now = Clock::get()?.unix_timestamp;
-        require!(now <= g.end_ts, GhostLegError::RoundOver);
+        // the instant the music stops (end_ts on the rollup clock) the ladder is closed
+        require!(now < g.end_ts, GhostLegError::RoundOver);
         let n = g.n_players as usize;
         require!((gap as usize) + 1 < n, GhostLegError::BadGap);
         require!(g.rungs.len() < MAX_RUNGS, GhostLegError::LadderFull);
@@ -298,11 +260,11 @@ pub mod ghost_leg {
             let payer = ctx.accounts.payer.key();
             let g = &mut ctx.accounts.game;
             // CUTTING is allowed again so a lost VRF request can be re-sent; the first callback wins.
-            // From any live sub-state (the hard cap covers an arm that never happened) or a re-send.
-            require!(status::playable(g.status) || g.status == status::CUTTING, GhostLegError::WrongStatus);
+            // LIVE, or CUTTING again to re-send a VRF request that got lost.
+            require!(g.status == status::LIVE || g.status == status::CUTTING, GhostLegError::WrongStatus);
             require!(g.is_member(&payer), GhostLegError::NotPlayer);
             let now = Clock::get()?.unix_timestamp;
-            require!(now > g.end_ts, GhostLegError::RoundNotOver);
+            require!(now >= g.end_ts, GhostLegError::RoundNotOver);
             g.status = status::CUTTING;
         }
         let disc = instruction::FinishCallback::DISCRIMINATOR.to_vec();
@@ -313,11 +275,12 @@ pub mod ghost_leg {
         let g = &mut ctx.accounts.game;
         require!(g.status == status::CUTTING, GhostLegError::WrongStatus); // idempotent
         let n = g.n_players as usize;
-        let window_start = g.duration_secs.saturating_sub(SNIPE_WINDOW_SECS);
-        let k0 = g.rungs.iter().position(|r| r.t >= window_start).unwrap_or(g.rungs.len());
-        let k1 = g.rungs.len();
+        // The cut lands on any rung of the whole ladder, uniformly: the result is the ladder as it
+        // stood right after that rung. A rung counts with the chance the cut lands at or after it, so
+        // a last-second snipe almost never matters.
+        let len = g.rungs.len();
         let r = u64::from_le_bytes(randomness[..8].try_into().unwrap());
-        let cutoff = k0 + (r % ((k1 - k0 + 1) as u64)) as usize;
+        let cutoff = if len == 0 { 0 } else { 1 + (r % len as u64) as usize };
 
         // Replay only the rungs that survive the cut.
         let mut ends: [u8; MAX_PLAYERS] = [0, 1, 2, 3, 4, 5];
@@ -354,7 +317,7 @@ pub mod ghost_leg {
         g.cut_randomness = randomness;
         g.pot = pot;
         g.status = status::SETTLED;
-        msg!("ghostleg: cut at rung {} of {} (window from {})", cutoff, k1, k0);
+        msg!("ghostleg: cut at rung {} of {}", cutoff, len);
         Ok(())
     }
 
@@ -611,6 +574,4 @@ pub enum GhostLegError {
     BadAccounts,
     #[msg("Arithmetic overflow")]
     Overflow,
-    #[msg("The danger zone has not played long enough yet")]
-    TooEarly,
 }

@@ -5,7 +5,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   RungSender, baseConnection, erConnection, fetchGame, fetchGameAnywhere, ix, keypairSigner, lamports,
-  send, sol, transfer, SNIPE_WINDOW_SECS, type GameState,
+  send, sol, transfer, dangerStartsAt, type GameState,
 } from "../src/lib/ghostleg";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -72,7 +72,7 @@ while (Date.now() < g.endTs * 1000 - 200) {
       const f = await fetchGame(er, game).catch(() => null);
       if (f && f.players[idx].rungsUsed > used) { g = f; break; }
     }
-    await sleep(left > SNIPE_WINDOW_SECS ? 450 + Math.random() * 500 : 700 + Math.random() * 600);
+    await sleep(left > g.durationSecs - dangerStartsAt(g.durationSecs) ? 450 + Math.random() * 500 : 700 + Math.random() * 600);
   } else {
     await sleep(250);
   }

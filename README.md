@@ -2,7 +2,7 @@
 
 Ghost Leg (amidakuji) is the ladder lottery played across Japan and Korea. Each player owns a column, and the prizes sit at the bottom. Follow your line down, and every rung you meet swaps you to the neighbouring column.
 
-**Ghost Leg on MagicBlock turns that lottery into musical chairs on a ladder.** Everyone stakes into a pot. When the round opens, every player spams rungs that swap where the paths land: drag the 👑 toward yourself, knock your rivals off it. The music climbs through five danger levels; in the danger zone it plays 5 seconds of warning, then the game calls VRF live and the answer decides when the music stops (0–10 s later). When it stops, the round is over. A second VRF draw then rewinds to a random rung inside the danger zone, and rungs below that cut are void, so even someone reading the chain can't snipe the stop.
+**Ghost Leg on MagicBlock turns that lottery into musical chairs on a ladder.** Everyone stakes into a pot. When the round opens, every player spams rungs that swap where the paths land: drag the 👑 toward yourself, knock your rivals off it. The music climbs through the danger levels for the whole round (20–60 s, set by the host), reaching levels 4 and 5 in the last third. When it stops, the round is over: the program refuses any rung from that second on, and every browser cuts the music and freezes the board on that same second of the rollup clock. Then VRF picks **one rung of the whole ladder**: the board as it stood right after that rung pays out, and later rungs are void. The longer you hold the crown, the better your odds; a rung placed at the buzzer only counts if the cut lands after it, so sniping the end barely pays.
 
 Built for **Solana Blitz v10: Entertainment Finance**.
 
@@ -12,8 +12,8 @@ Built for **Solana Blitz v10: Entertainment Finance**.
 |---|---|---|
 | Dozens of free moves per second from every player, confirmed in ~130 ms | **Ephemeral Rollup**: the game account is delegated to `devnet-as`; every `add_rung` is a gasless ER transaction signed by a per-game session key, with no wallet pop-ups | `add_rung` |
 | Nobody knows which slot holds the 👑 until the round opens | **VRF #1** (requested from inside the ER): Fisher–Yates shuffle of the prize slots | `start` → `start_callback` |
-| Musical chairs: nobody knows when the music stops | **VRF #2**, drawn live: after 5 s of danger zone any player calls `arm`; the callback sets `end_ts` 0–10 s later (once only: the game moves LIVE → ARMING → STOP_SET) | `arm` → `arm_callback` |
-| No sniping: a rung placed at the buzzer may not count | **VRF #3**: picks the cut uniformly between the first rung of the final 15 s and the last rung; only rungs above the cut are replayed | `finish` → `finish_callback` |
+| The round length is fixed and public, so the end is a buzzer everyone hears together | `start_callback` sets `end_ts = start + duration` (20–60 s); `add_rung` requires `now < end_ts`, `finish` requires `now >= end_ts` | `start` → `finish` |
+| One random rung decides; sniping the buzzer barely pays | **VRF #2**: picks the cut uniformly over every rung of the ladder (rung 1 … last); only rungs up to the cut are replayed | `finish` → `finish_callback` |
 | Real money, settled on Solana | **Commit + undelegate** back to the base layer, then one `payout` instruction pays every player from the game PDA | `settle_and_undelegate`, `payout` |
 
 Measured on devnet (25 Nov 2026):
@@ -27,7 +27,7 @@ Measured on devnet (25 Nov 2026):
 ```
 base layer   create_game ─ join ×N (stake + rung budget into the PDA, fund a session key) ─ delegate_game
                                                                                               │
-ER (10 ms)   start ──VRF──▶ start_callback (prizes) ─ add_rung × hundreds ─ arm ──VRF──▶ arm_callback (music stop) ─ finish ──VRF──▶ finish_callback (cut + payouts)
+ER (10 ms)   start ──VRF──▶ start_callback (prizes) ─ add_rung × hundreds until end_ts ─ finish ──VRF──▶ finish_callback (cut + payouts)
                                                                                               │
 base layer                                                    settle_and_undelegate (commit) ─ payout (one tx pays everyone)
 ```
@@ -43,9 +43,9 @@ base layer                                                    settle_and_undeleg
 | Phase | Track |
 |---|---|
 | Site and lobby | Danger level 1 |
-| Round, first half / second half | Danger level 2 / 3 |
-| Danger zone (last 15 s of the longest round) | Danger level 4 for the guaranteed first 5 s, then 5 while VRF decides and until the stop; the timer is hidden |
-| The VRF-chosen stop second | the track grinds to a halt (tape-stop) and the round closes |
+| Round, first third / second third | Danger level 2 / 3 |
+| Danger zone (last third of the round) | Danger level 4, then 5 for the final sixth; the HUD counts down to the stop |
+| The end of the round | the music cuts on the exact second the program closes the ladder (rollup clock) |
 | Reveal | end sound |
 
 The tracks are `public/audio/level1..5.wav` and `end.wav`, played as beat-aligned loops with Web Audio (`src/audio.ts`). Without them the app synthesises its own escalating track.
