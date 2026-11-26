@@ -13,6 +13,9 @@ import {
 } from "./actions";
 import { burnerWallet, hasPhantom, hasSession, loadBots, phantomWallet, recentGames, sessionFor, type AppWallet } from "./wallet";
 
+/** Pause between the music stopping and the VRF cut request, so the stop has a moment to land. */
+const FINISH_DELAY_MS = 5000;
+
 const erTx = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=custom&customUrl=${encodeURIComponent(ER_RPC)}`;
 const baseTx = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
 const acct = (a: PublicKey | string, er = false) =>
@@ -117,9 +120,7 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
   const [p, setP] = useState<GameParams>(DEFAULT_PARAMS);
   const [busy, setBusy] = useState(false);
   const recent = recentGames();
-  useEffect(() => {
-    if (!music.isEnding) music.setLevel(1); // after a result the end song keeps looping until a new table opens
-  }, []);
+  useEffect(() => music.setLevel(1), []); // the site plays danger level 1 (this also ends the end song)
   const deposit = p.stake + p.rungPrice * p.rungBudget + 0.002;
   const create = async () => {
     setBusy(true);
@@ -358,7 +359,8 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const settling = useRef(0);
   useEffect(() => {
     if (!game || !session || me < 0) return;
-    if (game.status === "Live" && now > game.endTs * 1000 + 300 && now - finishing.current > 15_000) {
+    // let the stop land: the VRF cut is requested FINISH_DELAY_MS after the music stops
+    if (game.status === "Live" && now > game.endTs * 1000 + FINISH_DELAY_MS && now - finishing.current > 15_000) {
       finishing.current = now;
       setTimeout(async () => {
         const sig = await finishRound(session, address);
@@ -398,16 +400,19 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
       stopped.current = true;
       stopAt.current = Date.now();
       music.stop();
-    } else if (!sawLive.current && !music.isEnding) music.setLevel(0);
+    } else if (!sawLive.current) music.setLevel(0);
     if ((s === "Settled" || s === "Paid") && sawLive.current && !stung.current) {
       stung.current = true;
       const top = game.prizeBps.indexOf(Math.max(...game.prizeBps));
-      setTimeout(() => music.sting(me >= 0 && game.ends[top] === me), 900);
+      setTimeout(() => mounted.current && music.sting(me >= 0 && game.ends[top] === me), 900);
     }
   }, [game, now, musicOver, dangerAt, me]);
+  // the end song belongs to the result screen only: leaving it (home, another table) goes back to level 1
+  const mounted = useRef(true);
   useEffect(
     () => () => {
-      if (!music.isEnding) music.setLevel(1);
+      mounted.current = false;
+      music.setLevel(1);
     },
     [],
   );
@@ -473,7 +478,15 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
         </div>
         <Ladder game={game} me={me} names={names} interactive={game.status === "Live" && !musicOver && me >= 0} onGap={addRung} />
         {(musicOver || game.status === "Cutting" || (stopAt.current > 0 && now - stopAt.current < 2500)) && (
-          <div className="stop-flash">THE MUSIC STOPPED</div>
+          <div className="stop-flash">
+            THE MUSIC STOPPED
+            {musicOver && (
+              <small>
+                VRF rewinds the tape in {Math.max(0, Math.ceil((game.endTs * 1000 + FINISH_DELAY_MS - now) / 1000))}s
+              </small>
+            )}
+            {game.status === "Cutting" && <small>VRF is rewinding the tape…</small>}
+          </div>
         )}
         {game.status === "Live" && !musicOver && me >= 0 && (
           <div className="controls">

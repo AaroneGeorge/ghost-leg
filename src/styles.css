@@ -133,10 +133,13 @@ footer a { color: #05261b; font-weight: 700; }
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(7, 26, 58, .92);
   padding: 16px 24px; border-radius: 999px; font-weight: 600; letter-spacing: .04em;
 }
+.stop-flash small {
+  display: block; margin-top: 10px; font-size: 12px; font-weight: 600; letter-spacing: .3em; color: var(--muted); text-align: center;
+}
 .stop-flash {
   position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); pointer-events: none;
-  font-size: 34px; font-weight: 300; letter-spacing: .5em; padding: 22px 30px 22px 46px; border-radius: 999px;
-  background: rgba(7, 26, 58, .82); white-space: nowrap; animation: stopin .5s cubic-bezier(.2, 1.6, .4, 1);
+  font-size: 34px; font-weight: 300; letter-spacing: .5em; padding: 24px 30px 22px 46px; border-radius: 28px;
+  background: rgba(7, 26, 58, .82); white-space: nowrap; text-align: center; animation: stopin .5s cubic-bezier(.2, 1.6, .4, 1);
 }
 
 .player { display: grid; grid-template-columns: 14px 1fr auto auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid rgba(255, 255, 255, .06); }
