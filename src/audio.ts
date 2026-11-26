@@ -8,7 +8,7 @@
 //   level 3  + minor arpeggio, brighter                        (round, second half)
 //   level 4  + double-time heartbeat, dissonant stabs          (danger zone: the music may stop any second)
 //   level 5  + 16th hats, siren, fast arps                     (deep in the danger zone)
-//   stop()   tape-stop: the music dies the instant the round ends (musical chairs)
+//   stop()   hard stop: the music dies the instant the round ends (musical chairs)
 //   sting()  result sting (major lift for a win, low hit otherwise)
 
 export type Level = 0 | 1 | 2 | 3 | 4 | 5;
@@ -147,43 +147,27 @@ class DangerMusic {
 
   /** The music stops dead: a 0.45 s tape-stop, then silence. */
   stop() {
+    // Musical chairs: the music dies on the exact frame the board freezes. A 12 ms fade only avoids a click.
     if (!this.ctx) return void (this.level = 0);
     const ctx = this.ctx;
     const t = ctx.currentTime;
+    const FADE = 0.012;
     this.level = 0;
     this.halt();
     if (this.cur) {
-      // the recording itself grinds to a halt
       const { src, gain } = this.cur;
-      src.playbackRate.cancelScheduledValues(t);
-      src.playbackRate.setValueAtTime(1, t);
-      src.playbackRate.exponentialRampToValueAtTime(0.05, t + 0.55);
-      gain.gain.setValueAtTime(1, t + 0.3);
-      gain.gain.linearRampToValueAtTime(0, t + 0.6);
-      src.stop(t + 0.65);
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0, t + FADE);
+      src.stop(t + FADE + 0.005);
       this.cur = null;
-      return;
     }
-    // tape-stop: a sweep falling off a cliff, then the bus is cut
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sawtooth";
-    o.frequency.setValueAtTime(hz(36), t);
-    o.frequency.exponentialRampToValueAtTime(28, t + 0.45);
-    g.gain.setValueAtTime(0.22, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-    const f = ctx.createBiquadFilter();
-    f.type = "lowpass";
-    f.frequency.setValueAtTime(2400, t);
-    f.frequency.exponentialRampToValueAtTime(120, t + 0.45);
-    o.connect(f).connect(g).connect(this.master);
-    o.start(t);
-    o.stop(t + 0.55);
-    this.drone.filter.frequency.cancelScheduledValues(t);
-    this.drone.filter.frequency.setValueAtTime(this.drone.filter.frequency.value, t);
-    this.drone.filter.frequency.exponentialRampToValueAtTime(60, t + 0.4);
-    this.drone.gain.gain.setTargetAtTime(0, t + 0.2, 0.08);
-    this.bus.gain.setTargetAtTime(0, t, 0.04);
+    this.drone.gain.gain.cancelScheduledValues(t);
+    this.drone.gain.gain.setValueAtTime(this.drone.gain.gain.value, t);
+    this.drone.gain.gain.linearRampToValueAtTime(0, t + FADE);
+    this.bus.gain.cancelScheduledValues(t);
+    this.bus.gain.setValueAtTime(this.bus.gain.value, t);
+    this.bus.gain.linearRampToValueAtTime(0, t + FADE);
   }
 
   /** Result sting. */

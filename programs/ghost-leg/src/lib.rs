@@ -48,6 +48,12 @@ pub mod status {
     pub const CUTTING: u8 = 3; // VRF #2 pending
     pub const SETTLED: u8 = 4;
     pub const PAID: u8 = 5;
+    // Live sub-states (rungs still allowed). LIVE above = the stop is not decided yet.
+    pub const ARMING: u8 = 6; // danger zone + MIN_DANGER_SECS reached, stop VRF pending
+    pub const STOP_SET: u8 = 7; // VRF picked the stop: end_ts is final
+    pub fn playable(s: u8) -> bool {
+        s == LIVE || s == ARMING || s == STOP_SET
+    }
 }
 
 #[ephemeral]
@@ -218,21 +224,49 @@ pub mod ghost_leg {
         g.start_randomness = randomness;
         let now = Clock::get()?.unix_timestamp;
         g.start_ts = now;
-        // Musical chairs: the music stops at a VRF-chosen second inside the danger zone (the last
-        // SNIPE_WINDOW_SECS of the advertised duration), never before MIN_DANGER_SECS of it have played.
-        // Bytes 20..22 are unused by the prize shuffle.
-        let spread = SNIPE_WINDOW_SECS - MIN_DANGER_SECS + 1;
-        let jitter = (MIN_DANGER_SECS + u16::from_le_bytes([randomness[20], randomness[21]]) % spread) as i64;
-        g.end_ts = now + (g.duration_secs - SNIPE_WINDOW_SECS) as i64 + jitter;
+        // The stop is NOT decided here: it is drawn live by `arm` once the danger zone has played
+        // MIN_DANGER_SECS. Until then end_ts is only the hard cap (the advertised duration).
+        g.end_ts = now + g.duration_secs as i64;
         g.status = status::LIVE;
-        msg!("ghostleg: music stops at {} (+{}s into the danger zone)", g.end_ts, jitter);
+        msg!("ghostleg: live, hard cap {}", g.end_ts);
+        Ok(())
+    }
+
+    /// Musical chairs: once the danger zone has played MIN_DANGER_SECS, any player asks VRF when the
+    /// music stops. The callback picks 0..=(SNIPE_WINDOW_SECS - MIN_DANGER_SECS) more seconds.
+    pub fn arm(ctx: Context<RequestVrf>, client_seed: u8) -> Result<()> {
+        {
+            let payer = ctx.accounts.payer.key();
+            let g = &mut ctx.accounts.game;
+            // ARMING is allowed again so a lost VRF request can be re-sent; the first callback wins.
+            require!(g.status == status::LIVE || g.status == status::ARMING, GhostLegError::WrongStatus);
+            require!(g.is_member(&payer), GhostLegError::NotPlayer);
+            let now = Clock::get()?.unix_timestamp;
+            let arm_at = g.start_ts + (g.duration_secs - SNIPE_WINDOW_SECS + MIN_DANGER_SECS) as i64;
+            require!(now >= arm_at, GhostLegError::TooEarly);
+            require!(now <= g.end_ts, GhostLegError::RoundOver);
+            g.status = status::ARMING;
+        }
+        let disc = instruction::ArmCallback::DISCRIMINATOR.to_vec();
+        request_vrf(&ctx, disc, client_seed)
+    }
+
+    pub fn arm_callback(ctx: Context<VrfCallback>, randomness: [u8; 32]) -> Result<()> {
+        let g = &mut ctx.accounts.game;
+        require!(g.status == status::ARMING, GhostLegError::WrongStatus); // idempotent: decided once
+        let now = Clock::get()?.unix_timestamp;
+        let spread = (SNIPE_WINDOW_SECS - MIN_DANGER_SECS + 1) as u64;
+        let more = (u64::from_le_bytes(randomness[..8].try_into().unwrap()) % spread) as i64;
+        g.end_ts = (now + more).min(g.end_ts); // never past the advertised duration
+        g.status = status::STOP_SET;
+        msg!("ghostleg: VRF says the music stops in {}s (at {})", more, g.end_ts);
         Ok(())
     }
 
     /// The frenzy: a rung between column `gap` and `gap + 1`, appended at the bottom.
     pub fn add_rung(ctx: Context<AddRung>, gap: u8) -> Result<()> {
         let g = &mut ctx.accounts.game;
-        require!(g.status == status::LIVE, GhostLegError::WrongStatus);
+        require!(status::playable(g.status), GhostLegError::WrongStatus);
         let now = Clock::get()?.unix_timestamp;
         require!(now <= g.end_ts, GhostLegError::RoundOver);
         let n = g.n_players as usize;
@@ -264,7 +298,8 @@ pub mod ghost_leg {
             let payer = ctx.accounts.payer.key();
             let g = &mut ctx.accounts.game;
             // CUTTING is allowed again so a lost VRF request can be re-sent; the first callback wins.
-            require!(g.status == status::LIVE || g.status == status::CUTTING, GhostLegError::WrongStatus);
+            // From any live sub-state (the hard cap covers an arm that never happened) or a re-send.
+            require!(status::playable(g.status) || g.status == status::CUTTING, GhostLegError::WrongStatus);
             require!(g.is_member(&payer), GhostLegError::NotPlayer);
             let now = Clock::get()?.unix_timestamp;
             require!(now > g.end_ts, GhostLegError::RoundNotOver);
@@ -576,4 +611,6 @@ pub enum GhostLegError {
     BadAccounts,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("The danger zone has not played long enough yet")]
+    TooEarly,
 }

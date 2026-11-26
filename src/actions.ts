@@ -74,6 +74,22 @@ export async function startRound(wallet: AppWallet, g: GameState, onStep: (s: st
   await send(er, [await ix.start(session.publicKey, g.address)], keypairSigner(session));
 }
 
+/** Anyone in the game: once the danger zone has played MIN_DANGER_SECS, ask VRF when the music stops.
+ *  Retries while the ER clock catches up (TooEarly); a lost request is simply re-sent. */
+export async function armRound(session: Keypair, game: PublicKey): Promise<string | null> {
+  const er = erConnection();
+  for (let i = 0; i < 30; i++) {
+    try {
+      return await send(er, [await ix.arm(session.publicKey, game)], keypairSigner(session));
+    } catch (e) {
+      const s = String(e);
+      if (s.includes("0x177f")) { await sleep(300); continue; } // TooEarly
+      return null; // already armed / stop already set / round over
+    }
+  }
+  return null;
+}
+
 /** Anyone in the game: after the bell, ask VRF where to cut. Retries while the ER clock catches up. */
 export async function finishRound(session: Keypair, game: PublicKey): Promise<string | null> {
   const er = erConnection();

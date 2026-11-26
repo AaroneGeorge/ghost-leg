@@ -27,6 +27,8 @@ export const SNIPE_WINDOW_SECS = 15;
 export const MIN_DANGER_SECS = 5;
 
 export const STATUS = ["Lobby", "Drawing", "Live", "Cutting", "Settled", "Paid"] as const;
+// on-chain live sub-states 6 (ARMING: stop VRF pending) and 7 (STOP_SET: end_ts is final) decode as "Live"
+const LIVE_SUBSTATES: Record<number, "arming" | "stopSet"> = { 6: "arming", 7: "stopSet" };
 export type StatusName = (typeof STATUS)[number];
 
 export type PlayerSlot = {
@@ -41,6 +43,8 @@ export type GameState = {
   host: PublicKey;
   gameId: bigint;
   status: StatusName;
+  /** while Live: has the stop VRF been requested / answered? (until then endTs is only the hard cap) */
+  stop: "open" | "arming" | "stopSet";
   stake: bigint;
   rungPrice: bigint;
   rungBudget: number;
@@ -87,7 +91,8 @@ export function decodeGame(address: PublicKey, data: Buffer): GameState {
     address,
     host: g.host,
     gameId: big(g.gameId),
-    status: STATUS[g.status] ?? "Lobby",
+    status: LIVE_SUBSTATES[g.status] ? "Live" : (STATUS[g.status] ?? "Lobby"),
+    stop: LIVE_SUBSTATES[g.status] ?? "open",
     stake: big(g.stake),
     rungPrice: big(g.rungPrice),
     rungBudget: g.rungBudget,
@@ -158,6 +163,8 @@ export const ix = {
     program.methods.start(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   addRung: (signer: PublicKey, game: PublicKey, gap: number) =>
     program.methods.addRung(gap).accountsPartial({ signer, game }).instruction(),
+  arm: (payer: PublicKey, game: PublicKey) =>
+    program.methods.arm(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   finish: (payer: PublicKey, game: PublicKey) =>
     program.methods.finish(Math.floor(Math.random() * 256)).accountsPartial({ payer, game }).instruction(),
   settle: (payer: PublicKey, game: PublicKey) =>

@@ -8,7 +8,7 @@ import {
 import { COLORS, Ladder } from "./Ladder";
 import { music, type Level } from "./audio";
 import {
-  DEFAULT_PARAMS, addBots, botGap, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
+  DEFAULT_PARAMS, addBots, armRound, botGap, cancelGame, createGame, depositOf, finishRound, joinGame, pullGap, settleAndPay, startRound,
   type GameParams,
 } from "./actions";
 import { burnerWallet, hasPhantom, hasSession, loadBots, phantomWallet, recentGames, sessionFor, type AppWallet } from "./wallet";
@@ -143,9 +143,9 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
         </p>
         <ol className="rules">
           <li><b>Stake</b> into a pot held by the program. Unused rungs are refunded.</li>
-          <li><b>VRF</b> shuffles the prizes and secretly picks the second the music will stop.</li>
+          <li><b>VRF</b> shuffles the prizes the moment the round opens. No one knows the layout in advance.</li>
           <li><b>Draw rungs</b>: each is a free transaction on a MagicBlock Ephemeral Rollup, confirmed in ~130&nbsp;ms, and grows the pot.</li>
-          <li><b>Danger zone.</b> The music speeds up for the last {SNIPE_WINDOW_SECS}s: {MIN_DANGER_SECS}s of warning, then it can stop any second. When it stops, the round is over.</li>
+          <li><b>Danger zone.</b> The music speeds up. After {MIN_DANGER_SECS}s of warning, VRF is called live to decide when it stops: any second now. When it stops, the round is over.</li>
           <li><b>No sniping.</b> A second VRF draw rewinds to a random rung inside the danger zone; rungs after it are void. Then Solana pays everyone.</li>
         </ol>
       </section>
@@ -354,8 +354,15 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   // ── automation: finish after the bell, then settle + pay (host first, others as backup)
   const finishing = useRef(0);
   const settling = useRef(0);
+  const arming = useRef(0);
   useEffect(() => {
     if (!game || !session || me < 0) return;
+    // musical chairs: danger zone + MIN_DANGER_SECS -> ask VRF when the music stops (host first, others as backup)
+    const armAt = (game.startTs + game.durationSecs - SNIPE_WINDOW_SECS + MIN_DANGER_SECS) * 1000;
+    if (game.status === "Live" && game.stop !== "stopSet" && now >= armAt && now < game.endTs * 1000 && now - arming.current > 4000) {
+      arming.current = now;
+      setTimeout(() => void armRound(session, address), isHost ? 0 : 1500 + Math.random() * 1500);
+    }
     if (game.status === "Live" && now > game.endTs * 1000 + 300 && now - finishing.current > 15_000) {
       finishing.current = now;
       setTimeout(async () => {
@@ -380,13 +387,22 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const stopped = useRef(false);
   const stung = useRef(false);
   const stopAt = useRef(0);
+  const frozen = useRef<GameState | null>(null); // the board as it was the instant the music stopped
   const dangerAt = game ? (game.startTs + game.durationSecs - SNIPE_WINDOW_SECS) * 1000 : 0;
   const musicOver = !!game && game.status === "Live" && now >= game.endTs * 1000;
   // re-render exactly at the stop second, so the board freezes and the music dies on the same frame
   const liveEnd = game && game.status === "Live" ? game.endTs * 1000 : 0;
   useEffect(() => {
     if (!liveEnd) return;
-    const t = setTimeout(() => setNow(Date.now()), Math.max(0, liveEnd - Date.now() + 1));
+    const t = setTimeout(() => {
+      if (sawLive.current && !stopped.current) {
+        stopped.current = true;
+        stopAt.current = Date.now();
+        frozen.current = gameRef.current;
+        music.stop(); // same tick as the freeze below
+      }
+      setNow(Date.now());
+    }, Math.max(0, liveEnd - Date.now()));
     return () => clearTimeout(t);
   }, [liveEnd]);
   useEffect(() => {
@@ -402,6 +418,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     if (sawLive.current && !stopped.current) {
       stopped.current = true;
       stopAt.current = Date.now();
+      frozen.current = gameRef.current;
       music.stop();
     } else if (!sawLive.current) music.setLevel(0);
     if ((s === "Settled" || s === "Paid") && sawLive.current && !stung.current) {
@@ -479,7 +496,13 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
           </div>
           <div className="rungcount">{game.rungs.length} rungs</div>
         </div>
-        <Ladder game={game} me={me} names={names} interactive={game.status === "Live" && !musicOver && me >= 0} onGap={addRung} />
+        <Ladder
+          game={(musicOver || game.status === "Cutting") && frozen.current ? frozen.current : game}
+          me={me}
+          names={names}
+          interactive={game.status === "Live" && !musicOver && me >= 0}
+          onGap={addRung}
+        />
         {(musicOver || game.status === "Cutting" || (stopAt.current > 0 && now - stopAt.current < 2500)) && (
           <div className="stop-flash">
             THE MUSIC STOPPED
@@ -561,7 +584,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
               Prize layout VRF <code>{hex(game.startRandomness)}</code>
             </p>
             <p>
-              Music stopped {game.endTs - game.startTs}s in (VRF #1). Cut VRF <code>{hex(game.cutRandomness)}</code> → rewound to rung{" "}
+              Music stopped {game.endTs - game.startTs}s in (stop VRF, drawn live in the danger zone). Cut VRF <code>{hex(game.cutRandomness)}</code> → rewound to rung{" "}
               <b>{game.cutoff}</b> of {game.rungs.length}. Rungs below the line are void.
             </p>
             <p className="links">
