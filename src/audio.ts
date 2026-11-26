@@ -64,7 +64,7 @@ class DangerMusic {
       const ctx = this.ctx;
       this.buffers = await Promise.all(
         names.map(async (n) => {
-          const r = await fetch(`/audio/${n}.wav`);
+          const r = await fetch(`${import.meta.env.BASE_URL}audio/${n}.wav`);
           if (!r.ok || !(r.headers.get("content-type") ?? "").includes("audio")) throw new Error("missing");
           return ctx.decodeAudioData(await r.arrayBuffer());
         }),
