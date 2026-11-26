@@ -6,7 +6,9 @@ Ghost Leg (amidakuji) is the ladder lottery played across Japan and Korea. Each 
 
 Built for **Solana Blitz v10: Entertainment Finance**.
 
-**Demo video (75 s, with sound):** [`demo/ghost-leg-demo.mp4`](demo/ghost-leg-demo.mp4): the rules in five points, then a real 30 s round on devnet (host + 3 bots) through the danger levels, the stop, the VRF rung pick and the Solana payout. Re-record it with `bun scripts/demo/record.ts demo/raw && sh scripts/demo/cut.sh demo/raw demo/ghost-leg-demo.mp4` (dev server running).
+**Play it live (devnet):** https://aaronegeorge.github.io/ghost-leg/ (each visitor gets a test wallet: grab devnet SOL at faucet.solana.com, ~0.15 SOL hosts a round with 3 bots).
+
+**Demo video (75 s, with sound):** https://youtu.be/boYHzlA5aZU · also in the repo as [`demo/ghost-leg-demo.mp4`](demo/ghost-leg-demo.mp4): the rules in five points, then a real 30 s round on devnet (host + 3 bots) through the danger levels, the stop, the VRF rung pick and the Solana payout. Re-record it with `bun scripts/demo/record.ts demo/raw && sh scripts/demo/cut.sh demo/raw demo/ghost-leg-demo.mp4` (dev server running).
 
 ## Why it needs MagicBlock
 
