@@ -117,7 +117,9 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
   const [p, setP] = useState<GameParams>(DEFAULT_PARAMS);
   const [busy, setBusy] = useState(false);
   const recent = recentGames();
-  useEffect(() => music.setLevel(1), []);
+  useEffect(() => {
+    if (!music.isEnding) music.setLevel(1); // after a result the end song keeps looping until a new table opens
+  }, []);
   const deposit = p.stake + p.rungPrice * p.rungBudget + 0.002;
   const create = async () => {
     setBusy(true);
@@ -396,14 +398,19 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
       stopped.current = true;
       stopAt.current = Date.now();
       music.stop();
-    } else if (!sawLive.current) music.setLevel(0);
+    } else if (!sawLive.current && !music.isEnding) music.setLevel(0);
     if ((s === "Settled" || s === "Paid") && sawLive.current && !stung.current) {
       stung.current = true;
       const top = game.prizeBps.indexOf(Math.max(...game.prizeBps));
       setTimeout(() => music.sting(me >= 0 && game.ends[top] === me), 900);
     }
   }, [game, now, musicOver, dangerAt, me]);
-  useEffect(() => () => music.setLevel(1), []);
+  useEffect(
+    () => () => {
+      if (!music.isEnding) music.setLevel(1);
+    },
+    [],
+  );
 
   if (!game) return <main className="loading">Loading table {short(address)}…</main>;
 
@@ -445,7 +452,9 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     <main className="game">
       <section className="stage">
         <div className="hud">
-          <div className={`status s-${game.status.toLowerCase()}`}>{statusLine(game.status)}</div>
+          <div className={`status s-${game.status.toLowerCase()}`}>
+            {game.status === "Paid" && game.startTs === 0 ? "Cancelled · deposits refunded" : statusLine(game.status)}
+          </div>
           {game.status === "Live" && !musicOver && now < dangerAt && (
             <div className="timer">
               {Math.ceil((dangerAt - now) / 1000)}s<small>until the danger zone</small>

@@ -32,6 +32,7 @@ class DangerMusic {
   private buffers: AudioBuffer[] | null = null; // [level1..level5, end]
   private loading = false;
   private cur: { src: AudioBufferSourceNode; gain: GainNode; startedAt: number; len: number } | null = null;
+  private ending = false; // the end song is looping (result screen → until a new table opens)
   muted = typeof localStorage !== "undefined" && localStorage.getItem("gl:muted") === "1";
 
   /** Must run inside a user gesture the first time (browser autoplay policy). */
@@ -76,14 +77,18 @@ class DangerMusic {
     }
   }
 
-  /** Crossfade to another level's loop, keeping the beat: the new loop starts at the same bar position. */
+  /** Crossfade to another loop. Danger levels share one 4-bar length, so the new loop starts at the same bar
+   *  position and the beat carries on; the end song starts from its top. */
   private playSample(l: Level) {
+    this.playLoop(this.buffers![l - 1]);
+  }
+
+  private playLoop(buf: AudioBuffer) {
     const ctx = this.ctx!;
-    const buf = this.buffers![l - 1];
     const t = ctx.currentTime + 0.02;
     let offset = 0;
     if (this.cur) {
-      offset = ((t - this.cur.startedAt) % this.cur.len) % buf.duration;
+      if (Math.abs(this.cur.len - buf.duration) < 0.01) offset = ((t - this.cur.startedAt) % this.cur.len) % buf.duration;
       this.cur.gain.gain.setTargetAtTime(0, t, 0.04);
       this.cur.src.stop(t + 0.3);
     }
@@ -98,6 +103,11 @@ class DangerMusic {
     this.cur = { src, gain, startedAt: t - offset, len: buf.duration };
   }
 
+  /** True while the end song loops; the site keeps it playing until a new table opens. */
+  get isEnding() {
+    return this.ending;
+  }
+
   get unlocked() {
     return !!this.ctx && this.ctx.state === "running";
   }
@@ -109,8 +119,9 @@ class DangerMusic {
   }
 
   setLevel(l: Level) {
-    if (l === this.level) return;
-    const wasOff = this.level === 0;
+    if (l === this.level && !this.ending) return;
+    const wasOff = this.level === 0 && !this.ending;
+    this.ending = false;
     this.level = l;
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
@@ -180,10 +191,14 @@ class DangerMusic {
     if (!this.ctx) return;
     const ctx = this.ctx;
     if (this.buffers) {
-      const src = ctx.createBufferSource();
-      src.buffer = this.buffers[5];
-      src.connect(this.master);
-      src.start(ctx.currentTime + 0.05);
+      // the end song loops until a new table opens (setLevel ends it)
+      const t0 = ctx.currentTime;
+      this.halt();
+      this.level = 0;
+      this.bus.gain.cancelScheduledValues(t0);
+      this.bus.gain.setValueAtTime(1, t0);
+      this.ending = true;
+      this.playLoop(this.buffers[5]);
       return;
     }
     const t = ctx.currentTime + 0.05;

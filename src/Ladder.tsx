@@ -28,7 +28,8 @@ export function initials(names: string[]): string[] {
 
 export function Ladder({ game, me, names, interactive, onGap }: Props) {
   const n = game.nPlayers;
-  const settled = game.status === "Settled" || game.status === "Paid";
+  // a cancelled table is also "Paid" but never started: no reveal for it
+  const settled = (game.status === "Settled" || game.status === "Paid") && game.startTs > 0;
   const rungs = game.rungs;
   const rows = Math.max(rungs.length, 24);
   const rowH = BODY / (rows + 1);
@@ -67,7 +68,7 @@ export function Ladder({ game, me, names, interactive, onGap }: Props) {
   const bestBps = Math.max(...game.prizeBps, 0);
   const winner = settled ? game.ends[game.prizeBps.indexOf(bestBps)] : -1;
   const live = game.status === "Live";
-  const known = game.status !== "Lobby" && game.status !== "Drawing";
+  const known = game.status !== "Lobby" && game.status !== "Drawing" && game.startTs > 0;
 
   // Widths follow row height so a crowded ladder stays readable instead of merging into a block.
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
