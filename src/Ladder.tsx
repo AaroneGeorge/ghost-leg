@@ -18,7 +18,7 @@ type Props = {
 const W = 680;
 const TOP = 86;
 const BODY = 400;
-const BOTTOM = 104;
+const BOTTOM = 74; // prize boxes only
 const PAD = 70;
 const GRID_DOTS = 9;
 
@@ -169,9 +169,7 @@ export function Ladder({ game, me, names, interactive, paused = false, onGap }: 
       {/* prizes at the bottom (slot order) */}
       {Array.from({ length: n }, (_, slot) => {
         const bps = game.prizeBps[slot] ?? 0;
-        const owner = game.ends[slot];
         const top = known && bps === bestBps && bps > 0;
-        const oc = COLORS[owner % COLORS.length];
         return (
           <g key={slot} transform={`translate(${x(slot)},${TOP + BODY + 40})`}>
             {top && <rect x={-31} y={-27} width={62} height={54} className="prize-ring" shapeRendering="crispEdges" />}
@@ -180,11 +178,6 @@ export function Ladder({ game, me, names, interactive, paused = false, onGap }: 
               {known ? `${(bps / 100).toFixed(0)}%` : "?"}
             </text>
             {top && <CrownSprite cx={0} cy={-7} px={2.4} color="#15130e" />}
-            {known && (
-              <g transform="translate(0,46)" className={settled && owner === winner ? "owner owner-win" : "owner"}>
-                <GhostSprite px={settled ? 1.5 : 1.1} color={oc} walk={false} eyes={settled} />
-              </g>
-            )}
           </g>
         );
       })}

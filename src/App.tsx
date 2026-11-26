@@ -347,18 +347,27 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     const loops = bots.map(async (b, k) => {
       const s = new RungSender(erConnection(), b.session, address);
       const temper = 260 + k * 90 + Math.random() * 200;
+      let spent = -1; // counted here, not read from the board: the board can lag a few seconds behind
       while (!stop) {
         const g = gameRef.current;
         if (!g || g.status !== "Live" || halted.current || chainNow() >= g.endTs * 1000) break;
         const idx = g.players.findIndex((p) => p.wallet.equals(b.wallet.publicKey));
-        if (idx >= 0 && g.players[idx].rungsUsed < g.rungBudget) {
+        if (idx >= 0 && spent < 0) spent = g.players[idx].rungsUsed;
+        const rungsLeft = idx >= 0 ? g.rungBudget - Math.max(spent, g.players[idx].rungsUsed) : 0;
+        let wait = 250; // sitting on the crown (or out of rungs): just watch closely
+        if (rungsLeft > 0) {
           const gap = botGap(g, idx);
           if (gap !== null) {
             addLocal(idx, gap);
+            spent++;
             s.add(gap).catch(() => null);
+            // Spread what is left over the time that is left, so bots keep fighting until the countdown ends
+            // instead of burning the budget early. Never faster than the bot's own temper.
+            const pace = (g.endTs * 1000 - chainNow()) / Math.max(1, rungsLeft - 1);
+            wait = Math.max(temper + Math.random() * 300, pace * (0.6 + Math.random() * 0.7));
           }
         }
-        await new Promise((r) => setTimeout(r, temper + Math.random() * 500));
+        await new Promise((r) => setTimeout(r, wait));
       }
     });
     return () => {
