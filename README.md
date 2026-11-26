@@ -2,7 +2,7 @@
 
 Ghost Leg (amidakuji) is the ladder lottery played across Japan and Korea. Each player owns a column, and the prizes sit at the bottom. Follow your line down, and every rung you meet swaps you to the neighbouring column.
 
-**Ghost Leg on MagicBlock turns that lottery into musical chairs on a ladder.** Everyone stakes into a pot. When the round opens, every player spams rungs that swap where the paths land: drag the 👑 toward yourself, knock your rivals off it. The music climbs through five danger levels; in the last 15 seconds it can stop at any moment, on a second VRF picked when the round opened. When it stops, the round is over. A second VRF draw then rewinds to a random rung inside the danger zone, and rungs below that cut are void, so even someone reading the chain can't snipe the stop.
+**Ghost Leg on MagicBlock turns that lottery into musical chairs on a ladder.** Everyone stakes into a pot. When the round opens, every player spams rungs that swap where the paths land: drag the 👑 toward yourself, knock your rivals off it. The music climbs through five danger levels; in the last 15 seconds it plays 5 seconds of warning and can then stop at any moment, on a second VRF picked when the round opened. When it stops, the round is over. A second VRF draw then rewinds to a random rung inside the danger zone, and rungs below that cut are void, so even someone reading the chain can't snipe the stop.
 
 Built for **Solana Blitz v10: Entertainment Finance**.
 
@@ -11,7 +11,7 @@ Built for **Solana Blitz v10: Entertainment Finance**.
 | Need | MagicBlock piece | Where |
 |---|---|---|
 | Dozens of free moves per second from every player, confirmed in ~130 ms | **Ephemeral Rollup**: the game account is delegated to `devnet-as`; every `add_rung` is a gasless ER transaction signed by a per-game session key, with no wallet pop-ups | `add_rung` |
-| Nobody knows which slot holds the 👑, or when the music stops, until the round opens | **VRF #1** (requested from inside the ER): Fisher–Yates shuffle of the prize slots, plus the stop second inside the danger zone (`end_ts`) | `start` → `start_callback` |
+| Nobody knows which slot holds the 👑, or when the music stops, until the round opens | **VRF #1** (requested from inside the ER): Fisher–Yates shuffle of the prize slots, plus the stop second inside the danger zone, 5–15 s in (`end_ts`) | `start` → `start_callback` |
 | No sniping: a rung placed at the buzzer may not count | **VRF #2**: picks the cut uniformly between the first rung of the final 15 s and the last rung; only rungs above the cut are replayed | `finish` → `finish_callback` |
 | Real money, settled on Solana | **Commit + undelegate** back to the base layer, then one `payout` instruction pays every player from the game PDA | `settle_and_undelegate`, `payout` |
 
@@ -43,7 +43,7 @@ base layer                                                    settle_and_undeleg
 |---|---|
 | Site and lobby | Danger level 1 |
 | Round, first half / second half | Danger level 2 / 3 |
-| Danger zone (last 15 s of the longest round) | Danger level 4, then 5; the timer is hidden |
+| Danger zone (last 15 s of the longest round) | Danger level 4 for the guaranteed first 5 s, then 5 until the stop; the timer is hidden |
 | The VRF-chosen stop second | the track grinds to a halt (tape-stop) and the round closes |
 | Reveal | end sound |
 

@@ -29,6 +29,8 @@ pub const MAX_PLAYERS: usize = 6;
 pub const MAX_RUNGS: usize = 1200;
 /// The VRF cut-off lands somewhere inside this many final seconds of the round.
 pub const SNIPE_WINDOW_SECS: u16 = 15;
+/// The danger zone always plays at least this long before the music may stop.
+pub const MIN_DANGER_SECS: u16 = 5;
 /// Lamports sent to each player's session key so it can sign ER transactions.
 pub const SESSION_FUND_LAMPORTS: u64 = 2_000_000;
 
@@ -217,8 +219,10 @@ pub mod ghost_leg {
         let now = Clock::get()?.unix_timestamp;
         g.start_ts = now;
         // Musical chairs: the music stops at a VRF-chosen second inside the danger zone (the last
-        // SNIPE_WINDOW_SECS of the advertised duration). Bytes 20..22 are unused by the prize shuffle.
-        let jitter = (u16::from_le_bytes([randomness[20], randomness[21]]) % (SNIPE_WINDOW_SECS + 1)) as i64;
+        // SNIPE_WINDOW_SECS of the advertised duration), never before MIN_DANGER_SECS of it have played.
+        // Bytes 20..22 are unused by the prize shuffle.
+        let spread = SNIPE_WINDOW_SECS - MIN_DANGER_SECS + 1;
+        let jitter = (MIN_DANGER_SECS + u16::from_le_bytes([randomness[20], randomness[21]]) % spread) as i64;
         g.end_ts = now + (g.duration_secs - SNIPE_WINDOW_SECS) as i64 + jitter;
         g.status = status::LIVE;
         msg!("ghostleg: music stops at {} (+{}s into the danger zone)", g.end_ts, jitter);

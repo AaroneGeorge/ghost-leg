@@ -23,6 +23,8 @@ export const ROUTER_RPC = "https://devnet-router.magicblock.app/";
 export const ER_VALIDATOR = new PublicKey("MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57");
 export const EXPLORER = "https://explorer.solana.com";
 export const SNIPE_WINDOW_SECS = 15;
+/** The danger zone always plays at least this long before the music may stop (mirrors the program). */
+export const MIN_DANGER_SECS = 5;
 
 export const STATUS = ["Lobby", "Drawing", "Live", "Cutting", "Settled", "Paid"] as const;
 export type StatusName = (typeof STATUS)[number];

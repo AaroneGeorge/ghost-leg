@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import QRCode from "qrcode";
 import {
-  BASE_RPC, DELEGATION_PROGRAM_ID, ER_RPC, PROGRAM_ID, RungSender, SNIPE_WINDOW_SECS,
+  BASE_RPC, DELEGATION_PROGRAM_ID, ER_RPC, MIN_DANGER_SECS, PROGRAM_ID, RungSender, SNIPE_WINDOW_SECS,
   baseConnection, decodeGame, erConnection, fetchGameAnywhere, short, sol, type GameState,
 } from "./lib/ghostleg";
 import { COLORS, Ladder } from "./Ladder";
@@ -12,9 +12,6 @@ import {
   type GameParams,
 } from "./actions";
 import { burnerWallet, hasPhantom, hasSession, loadBots, phantomWallet, recentGames, sessionFor, type AppWallet } from "./wallet";
-
-/** Pause between the music stopping and the VRF cut request, so the stop has a moment to land. */
-const FINISH_DELAY_MS = 5000;
 
 const erTx = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=custom&customUrl=${encodeURIComponent(ER_RPC)}`;
 const baseTx = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
@@ -148,7 +145,7 @@ function Home({ wallet, say }: { wallet: AppWallet; say: (m: string) => void }) 
           <li><b>Stake</b> into a pot held by the program. Unused rungs are refunded.</li>
           <li><b>VRF</b> shuffles the prizes and secretly picks the second the music will stop.</li>
           <li><b>Draw rungs</b>: each is a free transaction on a MagicBlock Ephemeral Rollup, confirmed in ~130&nbsp;ms, and grows the pot.</li>
-          <li><b>Danger zone.</b> In the last {SNIPE_WINDOW_SECS}s the music speeds up and can stop any second. When it stops, the round is over.</li>
+          <li><b>Danger zone.</b> The music speeds up for the last {SNIPE_WINDOW_SECS}s: {MIN_DANGER_SECS}s of warning, then it can stop any second. When it stops, the round is over.</li>
           <li><b>No sniping.</b> A second VRF draw rewinds to a random rung inside the danger zone; rungs after it are void. Then Solana pays everyone.</li>
         </ol>
       </section>
@@ -303,7 +300,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const addRung = useCallback(
     (gap: number) => {
       const g = gameRef.current;
-      if (!g || g.status !== "Live" || me < 0 || !sender) return;
+      if (!g || g.status !== "Live" || me < 0 || !sender || Date.now() >= g.endTs * 1000) return;
       if (g.players[me].rungsUsed >= g.rungBudget) return say("Out of rungs");
       addLocal(me, gap);
       sender.add(gap).catch((e) => say(String(e).slice(0, 120)));
@@ -312,7 +309,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   );
   const pull = useCallback(() => {
     const g = gameRef.current;
-    if (!g) return;
+    if (!g || g.status !== "Live" || Date.now() >= g.endTs * 1000) return;
     const gap = pullGap(g, me);
     if (gap === null) return say("You're on the 👑 — defend it!");
     addRung(gap);
@@ -359,8 +356,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const settling = useRef(0);
   useEffect(() => {
     if (!game || !session || me < 0) return;
-    // let the stop land: the VRF cut is requested FINISH_DELAY_MS after the music stops
-    if (game.status === "Live" && now > game.endTs * 1000 + FINISH_DELAY_MS && now - finishing.current > 15_000) {
+    if (game.status === "Live" && now > game.endTs * 1000 + 300 && now - finishing.current > 15_000) {
       finishing.current = now;
       setTimeout(async () => {
         const sig = await finishRound(session, address);
@@ -386,6 +382,13 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
   const stopAt = useRef(0);
   const dangerAt = game ? (game.startTs + game.durationSecs - SNIPE_WINDOW_SECS) * 1000 : 0;
   const musicOver = !!game && game.status === "Live" && now >= game.endTs * 1000;
+  // re-render exactly at the stop second, so the board freezes and the music dies on the same frame
+  const liveEnd = game && game.status === "Live" ? game.endTs * 1000 : 0;
+  useEffect(() => {
+    if (!liveEnd) return;
+    const t = setTimeout(() => setNow(Date.now()), Math.max(0, liveEnd - Date.now() + 1));
+    return () => clearTimeout(t);
+  }, [liveEnd]);
   useEffect(() => {
     if (!game) return;
     const s = game.status;
@@ -393,7 +396,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
     if (s === "Live" && !musicOver) {
       sawLive.current = true;
       const start = game.startTs * 1000;
-      const lvl: Level = now < dangerAt ? (now < start + (dangerAt - start) / 2 ? 2 : 3) : now < dangerAt + 7000 ? 4 : 5;
+      const lvl: Level = now < dangerAt ? (now < start + (dangerAt - start) / 2 ? 2 : 3) : now < dangerAt + MIN_DANGER_SECS * 1000 ? 4 : 5;
       return music.setLevel(lvl);
     }
     if (sawLive.current && !stopped.current) {
@@ -458,7 +461,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
       <section className="stage">
         <div className="hud">
           <div className={`status s-${game.status.toLowerCase()}`}>
-            {game.status === "Paid" && game.startTs === 0 ? "Cancelled · deposits refunded" : statusLine(game.status)}
+            {game.status === "Paid" && game.startTs === 0 ? "Cancelled · deposits refunded" : musicOver ? "Stopped" : statusLine(game.status)}
           </div>
           {game.status === "Live" && !musicOver && now < dangerAt && (
             <div className="timer">
@@ -480,12 +483,7 @@ function GameView({ address, wallet, say }: { address: PublicKey; wallet: AppWal
         {(musicOver || game.status === "Cutting" || (stopAt.current > 0 && now - stopAt.current < 2500)) && (
           <div className="stop-flash">
             THE MUSIC STOPPED
-            {musicOver && (
-              <small>
-                VRF rewinds the tape in {Math.max(0, Math.ceil((game.endTs * 1000 + FINISH_DELAY_MS - now) / 1000))}s
-              </small>
-            )}
-            {game.status === "Cutting" && <small>VRF is rewinding the tape…</small>}
+            {(musicOver || game.status === "Cutting") && <small>VRF is rewinding the tape…</small>}
           </div>
         )}
         {game.status === "Live" && !musicOver && me >= 0 && (
