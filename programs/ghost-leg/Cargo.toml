@@ -1,0 +1,24 @@
+[package]
+name = "ghost-leg"
+version = "0.1.0"
+description = "Ghost Leg: a real-time ladder-lottery brawl on MagicBlock Ephemeral Rollups + VRF"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ghost_leg"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "=1.0.2" }
+ephemeral-rollups-sdk = { version = "=0.18.0", features = ["anchor", "vrf"] }

@@ -1,0 +1,13 @@
+[toolchain]
+anchor_version = "1.0.2"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+ghost_leg = "DhS45bjZe13UqRbdoJZx5WK8rxmhG5VspmAUZU9F2yG8"
+
+[provider]
+cluster = "devnet"
+wallet = ".keys/devnet-deployer.json"
